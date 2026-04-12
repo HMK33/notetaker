@@ -10,7 +10,7 @@ interface SettingsModalProps {
 }
 
 const WHISPER_MODELS: { value: WhisperModel; label: string }[] = [
-  { value: "mlx-community/whisper-large-v3", label: "large-v3 ★ (최고 품질, ~3GB)" },
+  { value: "mlx-community/whisper-large-v3-mlx", label: "large-v3 ★ (최고 품질, ~3GB)" },
   { value: "mlx-community/whisper-large-v3-turbo", label: "large-v3-turbo (빠름, ~1.6GB)" },
   { value: "mlx-community/whisper-medium-mlx", label: "medium (~1.5GB)" },
   { value: "mlx-community/whisper-small-mlx", label: "small (~500MB)" },
@@ -93,12 +93,19 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
         <div className="p-5 space-y-5">
           {/* AI 설정 */}
           <Section title="AI 설정">
-            <ApiKeyInput
-              label="Gemini API Key"
-              value={form.gemini_api_key}
-              onChange={update("gemini_api_key")}
-              placeholder="AIzaSy..."
-            />
+            <div>
+              <label className="block text-xs text-zinc-400 mb-1.5">Claude CLI 경로</label>
+              <input
+                type="text"
+                value={form.claude_path}
+                onChange={(e) => update("claude_path")(e.target.value)}
+                placeholder="claude 또는 /usr/local/bin/claude"
+                className="w-full bg-zinc-900 text-white rounded-xl px-4 py-3 text-sm placeholder:text-zinc-600 outline-none focus:ring-1 focus:ring-zinc-600"
+              />
+              <p className="text-zinc-600 text-xs mt-1">
+                Claude Code CLI가 설치된 경로 (기본값: claude)
+              </p>
+            </div>
           </Section>
 
           {/* Notion 설정 */}

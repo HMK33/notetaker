@@ -3,10 +3,10 @@ import { load } from "@tauri-apps/plugin-store";
 import type { AppSettings, AudioSource } from "../types";
 
 const DEFAULT_SETTINGS: AppSettings = {
-  gemini_api_key: "",
+  claude_path: "claude",
   notion_api_key: "",
   notion_database_id: "",
-  whisper_model: "mlx-community/whisper-large-v3",
+  whisper_model: "mlx-community/whisper-large-v3-mlx",
   recordings_path: "",
   audio_source: "microphone" as AudioSource,
   python_path: "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",

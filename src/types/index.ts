@@ -72,10 +72,10 @@ export type WhisperModel =
   | "mlx-community/whisper-small-mlx"
   | "mlx-community/whisper-medium-mlx"
   | "mlx-community/whisper-large-v3-turbo"
-  | "mlx-community/whisper-large-v3";
+  | "mlx-community/whisper-large-v3-mlx";
 
 export interface AppSettings {
-  gemini_api_key: string;
+  claude_path: string;
   notion_api_key: string;
   notion_database_id: string;
   whisper_model: WhisperModel;

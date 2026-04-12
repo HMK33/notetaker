@@ -7,6 +7,8 @@ import { summarizeMeeting } from "../services/llm";
 import { saveMeeting, updateMeetingTranscript, updateMeetingSummary } from "../services/database";
 import type { RecordingResult, TranscriptResult, Meeting, AppSettings } from "../types";
 
+const ASSEMBLY_TIMEOUT_MS = 5 * 60 * 1000; // 전사 최대 대기 5분
+
 /**
  * 오버랩 청크 간 중복 텍스트를 제거하고 합침 (rust 측 오버랩 제거로 단순 병합 사용)
  */
@@ -23,7 +25,7 @@ function mergeOverlappingChunks(chunks: string[]): string {
   return result.replace(/\s+/g, " ").trim();
 }
 
-export function useRecording(geminiApiKey: string, settings?: AppSettings) {
+export function useRecording(settings?: AppSettings) {
   const {
     setRecordingState,
     setProcessingStep,
@@ -42,6 +44,8 @@ export function useRecording(geminiApiKey: string, settings?: AppSettings) {
   const meetingIdRef = useRef<string | null>(null);
   const memoRef = useRef<string | null>(null);
   const assembleResolveRef = useRef<((text: string) => void) | null>(null);
+  const assembleRejectRef = useRef<((err: Error) => void) | null>(null);
+  const assembleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Whisper 큐: 동시 실행 1개 제한
   const chunkQueue = useRef<Array<{ path: string; index: number }>>([]);
@@ -65,13 +69,25 @@ export function useRecording(geminiApiKey: string, settings?: AppSettings) {
     const chunks = Array.from({ length: total }, (_, i) => map.get(i)!);
     const fullText = mergeOverlappingChunks(chunks);
 
+    if (assembleTimerRef.current !== null) {
+      clearTimeout(assembleTimerRef.current);
+      assembleTimerRef.current = null;
+    }
     assembleResolveRef.current(fullText);
     assembleResolveRef.current = null;
+    assembleRejectRef.current = null;
   }, []);
 
   const waitForAssembly = useCallback((): Promise<string> => {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       assembleResolveRef.current = resolve;
+      assembleRejectRef.current = reject;
+      assembleTimerRef.current = setTimeout(() => {
+        assembleResolveRef.current = null;
+        assembleRejectRef.current = null;
+        assembleTimerRef.current = null;
+        reject(new Error("전사 시간 초과 (5분). Python 프로세스가 응답하지 않습니다."));
+      }, ASSEMBLY_TIMEOUT_MS);
       // 혹시 이미 모두 완료된 경우를 위해 즉시 체크
       tryAssemble();
     });
@@ -111,6 +127,11 @@ export function useRecording(geminiApiKey: string, settings?: AppSettings) {
     }
   }, [tryAssemble, setError]);
 
+  // processNextChunk를 ref로 유지하여 listener가 항상 최신 버전을 호출하도록 함
+  // settingsRef와 동일한 패턴 — listener useEffect 재실행 없이 stale closure 방지
+  const processNextChunkRef = useRef(processNextChunk);
+  processNextChunkRef.current = processNextChunk;
+
   useEffect(() => {
     // cancelled 플래그: settings 변경 등으로 effect가 재실행될 때
     // 이전 async setupListeners가 완료되더라도 리스너를 등록하지 않도록 방지
@@ -130,11 +151,12 @@ export function useRecording(geminiApiKey: string, settings?: AppSettings) {
       );
 
       // 청크 전사 처리 — 큐 + 동시실행 1개 제한 (RAM 폭주 방지)
+      // processNextChunkRef를 통해 호출 → listener 재등록 없이 항상 최신 함수 참조
       const unlisten3 = await listen<{ path: string; index: number; is_final: boolean }>(
         "chunk-ready",
         (e) => {
           chunkQueue.current.push({ path: e.payload.path, index: e.payload.index });
-          processNextChunk();
+          processNextChunkRef.current();
         }
       );
 
@@ -156,7 +178,9 @@ export function useRecording(geminiApiKey: string, settings?: AppSettings) {
       unlistenFns.current.forEach((fn) => fn());
       unlistenFns.current = [];
     };
-  }, [setAudioLevel, setRecordingState, setError, tryAssemble, processNextChunk]);
+  // tryAssemble/processNextChunk를 제거 → 이들이 바뀌어도 listener 재등록 안 함
+  // chunk-ready 이벤트 유실 방지 (Tauri 이벤트는 수신자 없으면 drop됨)
+  }, [setAudioLevel, setRecordingState, setError]);
 
   const startRecording = useCallback(
     async (deviceName?: string) => {
@@ -166,6 +190,11 @@ export function useRecording(geminiApiKey: string, settings?: AppSettings) {
         chunkTranscripts.current = new Map();
         totalChunksRef.current = null;
         assembleResolveRef.current = null;
+        assembleRejectRef.current = null;
+        if (assembleTimerRef.current !== null) {
+          clearTimeout(assembleTimerRef.current);
+          assembleTimerRef.current = null;
+        }
         chunkQueue.current = [];
         isProcessingChunk.current = false;
         prevChunkTailRef.current = "";
@@ -238,20 +267,23 @@ export function useRecording(geminiApiKey: string, settings?: AppSettings) {
         let fullTranscript: string;
         if (recordingResult.total_chunks === 0) {
           fullTranscript = "";
+          setError("녹음이 너무 짧습니다. 최소 3초 이상 녹음해주세요.");
         } else {
           fullTranscript = await waitForAssembly();
         }
 
         updateCurrentMeeting({ transcript: fullTranscript });
 
-        // 3. Gemini 요약
-        if (geminiApiKey && navigator.onLine && fullTranscript) {
+        // 3. Claude CLI 요약
+        if (fullTranscript) {
           setProcessingStep("summarizing");
           try {
-            const summary = await summarizeMeeting(fullTranscript, memo, geminiApiKey);
+            const summary = await summarizeMeeting(fullTranscript, memo, settingsRef.current?.claude_path);
             updateCurrentMeeting({ summary });
           } catch (e) {
-            console.error("Gemini 요약 실패:", e);
+            const msg = e instanceof Error ? e.message : String(e);
+            console.error("Claude 요약 실패:", msg);
+            setError(`요약 실패 — 결과 화면에서 다시 시도할 수 있습니다. (${msg})`);
           }
         }
 
@@ -270,7 +302,6 @@ export function useRecording(geminiApiKey: string, settings?: AppSettings) {
       }
     },
     [
-      geminiApiKey,
       setRecordingState,
       setProcessingStep,
       setCurrentMeeting,
@@ -305,12 +336,8 @@ export function useRecording(geminiApiKey: string, settings?: AppSettings) {
   const retrySummary = useCallback(
     async (transcript: string, memo: string | null, meetingId: string) => {
       try {
-        if (!geminiApiKey) {
-          setError("Gemini API 키가 설정되지 않았습니다.");
-          return;
-        }
         setProcessingStep("summarizing");
-        const summary = await summarizeMeeting(transcript, memo, geminiApiKey);
+        const summary = await summarizeMeeting(transcript, memo, settingsRef.current?.claude_path);
         await updateMeetingSummary(meetingId, summary);
         updateCurrentMeeting({ summary });
         setProcessingStep(null);
@@ -320,7 +347,7 @@ export function useRecording(geminiApiKey: string, settings?: AppSettings) {
         setProcessingStep(null);
       }
     },
-    [geminiApiKey, setProcessingStep, updateCurrentMeeting, setError]
+    [setProcessingStep, updateCurrentMeeting, setError]
   );
 
   const pauseRecording = useCallback(async () => {

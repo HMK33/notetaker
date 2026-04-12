@@ -79,7 +79,7 @@ export function SummaryView({ settings, onRetrySummary }: SummaryViewProps) {
           <SummaryContent summary={summary} />
         ) : (
           <p className="text-zinc-300 text-sm whitespace-pre-wrap leading-relaxed">
-            {transcript ?? "전사 결과가 없습니다."}
+            {transcript || "전사 결과가 없습니다."}
           </p>
         )}
       </div>
@@ -129,7 +129,7 @@ function SummaryContent({ summary }: { summary: MeetingSummary | null }) {
   if (!summary) {
     return (
       <p className="text-zinc-500 text-sm text-center mt-8">
-        요약 결과가 없습니다. Gemini API 키를 설정하고 다시 요약을 시도해보세요.
+        요약 결과가 없습니다. 아래 버튼으로 다시 시도해보세요.
       </p>
     );
   }

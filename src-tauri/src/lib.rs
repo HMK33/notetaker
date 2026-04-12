@@ -44,7 +44,7 @@ async fn run_whisper(
     python_path: Option<String>,
     initial_prompt: Option<String>,
 ) -> Result<TranscriptResult, String> {
-    let model = model.unwrap_or_else(|| "mlx-community/whisper-large-v3".to_string());
+    let model = model.unwrap_or_else(|| "mlx-community/whisper-large-v3-mlx".to_string());
     let python_path = python_path.unwrap_or_else(|| "/usr/bin/python3".to_string());
     let prompt = initial_prompt.unwrap_or_default();
     let script_path = get_script_path(&app);
@@ -112,6 +112,44 @@ fn delete_audio_file(audio_path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn run_claude_summary(prompt: String, claude_path: Option<String>) -> Result<String, String> {
+    use tokio::io::AsyncWriteExt;
+
+    let claude_bin = claude_path.unwrap_or_else(|| "claude".to_string());
+
+    let mut child = tokio::process::Command::new(&claude_bin)
+        .args(["--print", "--output-format", "json"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true) // 타임아웃 등으로 drop될 때 프로세스 자동 kill
+        .spawn()
+        .map_err(|e| format!("Claude 실행 실패 ({claude_bin}): {e}"))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(prompt.as_bytes()).await
+            .map_err(|e| format!("stdin 쓰기 실패: {e}"))?;
+        stdin.shutdown().await
+            .map_err(|e| format!("stdin 종료 실패: {e}"))?;
+    }
+
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(300), // 5분 타임아웃
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| "요약 시간 초과 (5분). Claude CLI가 응답하지 않습니다.".to_string())?
+    .map_err(|e| format!("Claude 응답 대기 실패: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Claude 오류: {stderr}"));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[tauri::command]
 fn open_recordings_folder(recordings_path: Option<String>) -> Result<(), String> {
     let dir = recording::get_recordings_dir(&recordings_path.unwrap_or_default());
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -161,6 +199,7 @@ pub fn run() {
             check_python_env,
             delete_audio_file,
             open_recordings_folder,
+            run_claude_summary,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

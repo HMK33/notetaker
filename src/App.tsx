@@ -42,10 +42,7 @@ export default function App() {
     reset,
   } = useMeetingStore();
   const { settings, loading: settingsLoading, saveSettings } = useSettings();
-  const { startRecording, stopRecording, pauseRecording, resumeRecording, retrySummary } = useRecording(
-    settings.gemini_api_key,
-    settings
-  );
+  const { startRecording, stopRecording, pauseRecording, resumeRecording, retrySummary } = useRecording(settings);
   const { loadMeetings } = useMeetings();
   const isOnline = useOnlineStatus();
 
@@ -78,10 +75,6 @@ export default function App() {
 
   // 일괄 요약 처리
   const handleBatchSummarize = async () => {
-    if (!settings.gemini_api_key) {
-      setError("Gemini API 키를 설정해주세요.");
-      return;
-    }
     setBatchSummarizing(true);
     try {
       const all = await getMeetings();
@@ -93,7 +86,7 @@ export default function App() {
           const summary = await summarizeMeeting(
             meeting.transcript!,
             meeting.memo,
-            settings.gemini_api_key
+            settings.claude_path
           );
           await updateMeetingSummary(meeting.id, summary);
 
@@ -212,7 +205,7 @@ export default function App() {
       </header>
 
       {/* 미처리 미팅 배너 (온라인 + API 키 있음 + 미처리 있음) */}
-      {isOnline && pendingCount > 0 && settings.gemini_api_key && view === "home" && recordingState === "idle" && (
+      {pendingCount > 0 && view === "home" && recordingState === "idle" && (
         <div className="mx-4 mt-3 flex items-center justify-between p-3 bg-amber-900/30 border border-amber-800 rounded-xl">
           <div className="flex items-center gap-2 text-amber-300 text-sm">
             <Sparkles size={14} />

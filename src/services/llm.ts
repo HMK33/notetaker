@@ -1,7 +1,7 @@
-import { fetch } from "@tauri-apps/plugin-http";
+import { invoke } from "@tauri-apps/api/core";
 import type { MeetingSummary } from "../types";
 
-const SYSTEM_PROMPT = `당신은 꼼꼼하고 완벽을 기하는 '수석 비즈니스 회의 서기(Chief Meeting Secretary)'입니다. 
+const SYSTEM_PROMPT = `당신은 꼼꼼하고 완벽을 기하는 '수석 비즈니스 회의 서기(Chief Meeting Secretary)'입니다.
 당신의 최우선 목표는 화자가 구분되지 않은 날것(Raw)의 전사 텍스트에서, 단 하나의 디테일이나 팩트도 누락되지 않도록 최대한 자세하게 텍스트를 정리하는 것입니다.
 
 Rules:
@@ -35,75 +35,40 @@ Rules:
 
 const MAX_TRANSCRIPT_CHARS = 80000; // ~20k tokens
 
-async function fetchWithRetry(
-  url: string,
-  options: Parameters<typeof fetch>[1],
-  timeoutMs: number
-) {
-  let lastError: unknown = new Error("요청 실패");
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      return await Promise.race([
-        fetch(url, options),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`요청 시간 초과 (${timeoutMs / 1000}초)`)), timeoutMs)
-        ),
-      ]);
-    } catch (e) {
-      lastError = e;
-      if (attempt === 0) await new Promise(r => setTimeout(r, 1500));
-    }
-  }
-  throw lastError;
+interface ClaudeCliOutput {
+  result: string;
+  is_error: boolean;
 }
 
 export async function summarizeMeeting(
   transcript: string,
   memo: string | null,
-  apiKey: string
+  claudePath?: string,
 ): Promise<MeetingSummary> {
   const truncatedTranscript =
     transcript.length > MAX_TRANSCRIPT_CHARS
       ? transcript.slice(0, MAX_TRANSCRIPT_CHARS) + "\n\n[전사본이 너무 길어 일부 생략됨]"
       : transcript;
 
-  const userContent = `[전사 내용]\n${truncatedTranscript}\n\n[사용자 직접 작성]\n${memo ?? "없음"}`;
+  const prompt = `${SYSTEM_PROMPT}\n\n[전사 내용]\n${truncatedTranscript}\n\n[사용자 직접 작성]\n${memo ?? "없음"}`;
 
-  const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent?key=${apiKey}`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      system_instruction: {
-        parts: [{ text: SYSTEM_PROMPT }]
-      },
-      contents: [{
-        parts: [{ text: userContent }]
-      }],
-      generationConfig: {
-        responseMimeType: "application/json"
-      }
-    }),
-  }, 30000);
+  const stdout = await invoke<string>("run_claude_summary", {
+    prompt,
+    claudePath: claudePath || undefined,
+  });
 
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
-    const message = (err as any).error?.message ?? `HTTP ${response.status}`;
-    throw new Error(`LLM API 오류: ${message}`);
+  const cliOutput = JSON.parse(stdout) as ClaudeCliOutput;
+  if (cliOutput.is_error) {
+    throw new Error(`Claude 오류: ${cliOutput.result}`);
   }
 
-  /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
-  const data = await response.json() as any;
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  const resultText = cliOutput.result;
 
   try {
-    return JSON.parse(text) as MeetingSummary;
+    return JSON.parse(resultText) as MeetingSummary;
   } catch {
-    // LLM이 JSON 외 텍스트를 포함한 경우 추출 시도
-    const match = text.match(/\{[\s\S]*\}/);
+    const match = resultText.match(/\{[\s\S]*\}/);
     if (match) return JSON.parse(match[0]) as MeetingSummary;
-    throw new Error("요약 결과를 파싱할 수 없습니다. LLM 응답 형식 오류");
+    throw new Error("요약 결과를 파싱할 수 없습니다. Claude 응답 형식 오류");
   }
 }
