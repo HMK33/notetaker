@@ -62,10 +62,18 @@ impl WhisperServer {
         })
     }
 
-    pub fn transcribe(&mut self, audio_path: &str, initial_prompt: &str) -> Result<TranscriptResult> {
+    pub fn transcribe(
+        &mut self,
+        audio_path: &str,
+        initial_prompt: &str,
+        diarize: bool,
+        hf_token: &str,
+    ) -> Result<TranscriptResult> {
         let req = serde_json::json!({
             "audio_path": audio_path,
             "initial_prompt": initial_prompt,
+            "diarize": diarize,
+            "hf_token": hf_token,
         });
 
         writeln!(self.stdin, "{req}").map_err(|e| anyhow::anyhow!("stdin 쓰기 실패: {e}"))?;

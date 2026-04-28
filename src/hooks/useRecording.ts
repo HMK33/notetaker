@@ -43,6 +43,20 @@ function cleanHallucinations(text: string): string {
 const OVERLAP_SEC = 2;
 const WORDS_PER_SEC_KO = 2.5; // 한국어 대략치 — fallback용
 
+// 단락 구분(\n\n+)을 "단어"로 인코딩해서 dedup이 보존하도록 함.
+// 화자 분리 결과가 사라지지 않게 함.
+const PARAGRAPH_TOKEN = "§§PARA§§";
+
+function encodeParagraphs(text: string): string {
+  return text.replace(/\n{2,}/g, ` ${PARAGRAPH_TOKEN} `);
+}
+
+function decodeParagraphs(text: string): string {
+  return text
+    .replace(new RegExp(`(?:\\s*${PARAGRAPH_TOKEN}\\s*)+`, "g"), "\n\n")
+    .trim();
+}
+
 function dedupeOverlap(prev: string, curr: string): string {
   if (!prev || !curr) return curr;
   const prevWords = prev.split(/\s+/).filter(Boolean);
@@ -63,15 +77,17 @@ function dedupeOverlap(prev: string, curr: string): string {
 
 function mergeOverlappingChunks(chunks: string[]): string {
   if (chunks.length === 0) return "";
-  let result = chunks[0].trim();
+  const encoded = chunks.map((c) => encodeParagraphs(c.trim()));
+  let result = encoded[0];
 
-  for (let i = 1; i < chunks.length; i++) {
-    const next = dedupeOverlap(result, chunks[i].trim());
+  for (let i = 1; i < encoded.length; i++) {
+    const next = dedupeOverlap(result, encoded[i]);
     if (!next) continue;
     result += (result ? " " : "") + next;
   }
 
-  return result.replace(/\s+/g, " ").trim();
+  // 모든 공백을 단일 공백으로 정규화한 뒤 단락 토큰만 \n\n으로 복원.
+  return decodeParagraphs(result.replace(/[\t ]+/g, " ").trim());
 }
 
 export function useRecording(settings?: AppSettings) {
@@ -170,11 +186,13 @@ export function useRecording(settings?: AppSettings) {
         pythonPath: settingsRef.current?.python_path,
         model: settingsRef.current?.whisper_model,
         initialPrompt: initialPrompt || undefined,
+        diarize: setupRef.current?.diarize ?? false,
+        hfToken: settingsRef.current?.hf_token || undefined,
       });
       const cleaned = cleanHallucinations(result.text);
       chunkTranscripts.current.set(index, cleaned);
-      // 다음 청크 품질을 위해 현재 청크 끝 ~150자 보존
-      prevChunkTailRef.current = cleaned.slice(-150);
+      // 다음 청크 품질을 위해 현재 청크 끝 ~150자 보존 (단락 마커 제외하고)
+      prevChunkTailRef.current = cleaned.replace(/\n+/g, " ").slice(-150);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`[Whisper] 청크 ${index} 전사 실패:`, msg);

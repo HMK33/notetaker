@@ -158,6 +158,19 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
                 mlx-whisper가 설치된 Python 경로를 입력하세요
               </p>
             </div>
+
+            <div className="mt-3">
+              <ApiKeyInput
+                label="HuggingFace 토큰 (화자 분리용)"
+                value={form.hf_token}
+                onChange={update("hf_token")}
+                placeholder="hf_..."
+              />
+              <p className="text-zinc-600 text-xs mt-1">
+                화자 분리(diarization) 사용 시 필요. huggingface.co/settings/tokens에서 발급 후
+                pyannote/speaker-diarization-3.1 모델 약관 동의 필요.
+              </p>
+            </div>
           </Section>
 
           {/* 오디오 설정 */}

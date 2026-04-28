@@ -31,6 +31,7 @@ export interface MeetingSetup {
   title: string | null;
   meeting_type: string | null;
   attendees: string[];
+  diarize: boolean;
 }
 
 export interface MeetingSummary {
@@ -104,4 +105,5 @@ export interface AppSettings {
   recordings_path: string;
   audio_source: AudioSource;
   python_path: string;
+  hf_token: string;
 }

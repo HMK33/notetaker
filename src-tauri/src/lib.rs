@@ -86,10 +86,14 @@ async fn run_whisper(
     model: Option<String>,
     python_path: Option<String>,
     initial_prompt: Option<String>,
+    diarize: Option<bool>,
+    hf_token: Option<String>,
 ) -> Result<TranscriptResult, String> {
     let model = model.unwrap_or_else(|| "mlx-community/whisper-large-v3-mlx".to_string());
     let python_path = python_path.unwrap_or_else(|| "/usr/bin/python3".to_string());
     let prompt = initial_prompt.unwrap_or_default();
+    let diarize = diarize.unwrap_or(false);
+    let hf_token = hf_token.unwrap_or_default();
     let script_path = get_script_path(&app);
     let server_handle = whisper_server.inner().clone();
 
@@ -113,7 +117,7 @@ async fn run_whisper(
         let result = guard
             .as_mut()
             .unwrap()
-            .transcribe(&audio_path, &prompt)
+            .transcribe(&audio_path, &prompt, diarize, &hf_token)
             .map_err(|e| e.to_string());
 
         // 전사 실패 시 서버 리셋 (다음 호출 시 재시작)

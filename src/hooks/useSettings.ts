@@ -10,6 +10,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   recordings_path: "",
   audio_source: "microphone" as AudioSource,
   python_path: "/Users/kwon/Coding/notetaker/.venv/bin/python",
+  hf_token: "",
 };
 
 async function getStore() {

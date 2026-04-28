@@ -2,9 +2,12 @@
 """
 mlx-whisper 전사 스크립트
 사용법 (단일):  python3 transcribe.py <audio_path> [model_name] [initial_prompt]
-사용법 (서버):  python3 transcribe.py --server [model_name]
-  stdin  → {"audio_path": "...", "initial_prompt": "..."}\n
+사용법 (서버):  python3 transcribe.py --server [model_name] [--diarize-token <hf_token>]
+  stdin  → {"audio_path": "...", "initial_prompt": "...", "diarize": true|false}\n
   stdout ← {"text": "...", "segments": [...], "language": "..."}\n  또는  {"error": "..."}\n
+
+화자 분리(diarize=true)가 켜지면 pyannote.audio로 turn boundary만 추출해서
+Whisper segment 사이에 \n\n 단락 구분자를 삽입한다. 화자 라벨(SPEAKER_xx)은 사용하지 않음.
 """
 import sys
 import json
@@ -13,23 +16,102 @@ import re
 
 _original_stderr = sys.stderr
 
+# 다이어라이제이션 파이프라인 캐시 — 한 번 로드 후 재사용
+_diar_pipeline = None
+_diar_token = None
+
 
 def squash_repetitions(text: str) -> str:
     pattern = r"(.+?)(?:[\s,]+\1){4,}"
     return re.sub(pattern, r"\1", text)
 
 
-def build_output(result: dict) -> dict:
+def get_diar_pipeline(hf_token: str):
+    """pyannote 파이프라인 lazy load. 토큰이 바뀌면 재로드."""
+    global _diar_pipeline, _diar_token
+    if _diar_pipeline is not None and _diar_token == hf_token:
+        return _diar_pipeline
+    try:
+        from pyannote.audio import Pipeline
+    except ImportError:
+        raise RuntimeError("pyannote.audio가 설치되지 않았습니다. pip install pyannote.audio")
+
+    _diar_pipeline = Pipeline.from_pretrained(
+        "pyannote/speaker-diarization-3.1",
+        use_auth_token=hf_token,
+    )
+    if _diar_pipeline is None:
+        raise RuntimeError(
+            "pyannote 파이프라인 로드 실패. HF 토큰이 유효한지, "
+            "https://huggingface.co/pyannote/speaker-diarization-3.1 에서 약관 동의했는지 확인하세요."
+        )
+    _diar_token = hf_token
+    return _diar_pipeline
+
+
+def diarize_turns(audio_path: str, hf_token: str):
+    """오디오에서 화자가 바뀌는 시점만 추출. 라벨은 무시.
+    반환값: 단일 화자 구간들 [(start, end), ...] (시간 순서)"""
+    pipeline = get_diar_pipeline(hf_token)
+    diar = pipeline(audio_path)
+    # itertracks: (Segment, track_name, speaker_label) — speaker_label은 의도적으로 버림
+    segments = []
+    for turn, _, _ in diar.itertracks(yield_label=True):
+        segments.append((turn.start, turn.end))
+    # 시간 순서로 정렬 (보통 이미 정렬되어 있지만 안전망)
+    segments.sort(key=lambda s: s[0])
+    return segments
+
+
+def speaker_index_at(turns, t: float) -> int:
+    """타임스탬프 t가 몇 번째 turn에 속하는지 반환. 어디에도 안 속하면 -1."""
+    for i, (s, e) in enumerate(turns):
+        if s <= t <= e:
+            return i
+    return -1
+
+
+def merge_with_turns(segments, turns):
+    """Whisper segment 리스트와 turn 경계를 가지고 단락 분리된 텍스트 생성.
+    같은 turn에 속한 segment들은 공백으로 합치고, turn이 바뀌면 \n\n 삽입."""
+    if not segments:
+        return ""
+    if not turns:
+        return " ".join(seg["text"] for seg in segments).strip()
+
+    parts = []
+    prev_turn = None
+    for seg in segments:
+        # segment의 중간 시간으로 turn 매핑 (시작/끝이 경계 걸치면 중간이 가장 안정)
+        mid = (seg["start"] + seg["end"]) / 2.0
+        cur_turn = speaker_index_at(turns, mid)
+        if prev_turn is None:
+            parts.append(seg["text"])
+        elif cur_turn != prev_turn and cur_turn != -1:
+            parts.append("\n\n" + seg["text"])
+        else:
+            parts.append(" " + seg["text"])
+        if cur_turn != -1:
+            prev_turn = cur_turn
+    return "".join(parts).strip()
+
+
+def build_output(result: dict, turns=None) -> dict:
+    cleaned_segments = [
+        {
+            "start": seg["start"],
+            "end": seg["end"],
+            "text": squash_repetitions(seg["text"]).strip(),
+        }
+        for seg in result.get("segments", [])
+    ]
+    if turns:
+        text = merge_with_turns(cleaned_segments, turns)
+    else:
+        text = squash_repetitions(result["text"]).strip()
     return {
-        "text": squash_repetitions(result["text"]).strip(),
-        "segments": [
-            {
-                "start": seg["start"],
-                "end": seg["end"],
-                "text": squash_repetitions(seg["text"]).strip(),
-            }
-            for seg in result.get("segments", [])
-        ],
+        "text": text,
+        "segments": cleaned_segments,
         "language": result.get("language", "ko"),
     }
 
@@ -67,9 +149,9 @@ def transcribe(audio_path: str, model: str, initial_prompt: str = "") -> None:
     print(json.dumps(build_output(result), ensure_ascii=False), flush=True)
 
 
-def run_server(model: str) -> None:
+def run_server(model: str, default_hf_token: str = "") -> None:
     """stdin에서 JSON 요청을 읽고 전사 결과를 stdout에 출력하는 서버 모드.
-    모델을 한 번만 로딩하여 청크당 재로딩 없이 빠르게 처리."""
+    요청에 diarize=true가 있으면 pyannote로 turn boundary 추출 후 단락 분리."""
     try:
         import mlx_whisper
     except ImportError:
@@ -86,6 +168,8 @@ def run_server(model: str) -> None:
             req = json.loads(line)
             audio_path = req.get("audio_path", "")
             initial_prompt = req.get("initial_prompt", "")
+            diarize = bool(req.get("diarize", False))
+            hf_token = req.get("hf_token", default_hf_token)
 
             if not os.path.exists(audio_path):
                 print(json.dumps({"error": f"오디오 파일을 찾을 수 없습니다: {audio_path}"}), flush=True)
@@ -101,7 +185,19 @@ def run_server(model: str) -> None:
                 kwargs["initial_prompt"] = initial_prompt
 
             result = mlx_whisper.transcribe(audio_path, **kwargs)
-            print(json.dumps(build_output(result), ensure_ascii=False), flush=True)
+
+            turns = None
+            if diarize:
+                if not hf_token:
+                    print(json.dumps({"error": "화자 분리에는 HuggingFace 토큰이 필요합니다."}), flush=True)
+                    continue
+                try:
+                    turns = diarize_turns(audio_path, hf_token)
+                except Exception as e:
+                    print(json.dumps({"error": f"화자 분리 실패: {e}"}), flush=True)
+                    continue
+
+            print(json.dumps(build_output(result, turns), ensure_ascii=False), flush=True)
 
         except json.JSONDecodeError:
             continue
@@ -112,7 +208,13 @@ def run_server(model: str) -> None:
 if __name__ == "__main__":
     if len(sys.argv) >= 2 and sys.argv[1] == "--server":
         model_name = sys.argv[2] if len(sys.argv) > 2 else "mlx-community/whisper-large-v3"
-        run_server(model_name)
+        # 옵션: --diarize-token <token> — 매 요청에 토큰 주는 대신 서버 시작 시 한 번
+        default_token = ""
+        if "--diarize-token" in sys.argv:
+            i = sys.argv.index("--diarize-token")
+            if i + 1 < len(sys.argv):
+                default_token = sys.argv[i + 1]
+        run_server(model_name, default_token)
     else:
         if len(sys.argv) < 2:
             print(

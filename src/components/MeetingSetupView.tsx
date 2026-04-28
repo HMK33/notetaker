@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from "react";
-import { Mic, X, Plus, ArrowLeft, ChevronDown } from "lucide-react";
+import { Mic, X, Plus, ArrowLeft, ChevronDown, Users2 } from "lucide-react";
 import { useTeamMembers } from "../hooks/useTeamMembers";
 import { useMeetingTypes } from "../hooks/useMeetingTypes";
 import type { MeetingSetup } from "../types";
@@ -17,6 +17,7 @@ export function MeetingSetupView({ onCancel, onStart }: Props) {
   const [meetingTypeId, setMeetingTypeId] = useState<string | null>(null);
   const [attendees, setAttendees] = useState<string[]>([]);
   const [externalInput, setExternalInput] = useState("");
+  const [diarize, setDiarize] = useState(false);
   const externalRef = useRef<HTMLInputElement>(null);
 
   // 첫 로드 시 첫 번째 유형(내부미팅)을 디폴트로
@@ -52,6 +53,7 @@ export function MeetingSetupView({ onCancel, onStart }: Props) {
       title: title.trim() || null,
       meeting_type: selectedTypeName,
       attendees,
+      diarize,
     });
   };
 
@@ -206,6 +208,28 @@ export function MeetingSetupView({ onCancel, onStart }: Props) {
                 </p>
               )}
             </div>
+          </Field>
+
+          {/* 화자 분리 토글 */}
+          <Field label="고급" hint="회의 크기·환경에 따라 선택">
+            <label className="flex items-start gap-3 p-3 bg-zinc-900 border border-zinc-800 rounded-xl cursor-pointer hover:border-zinc-700 transition-colors">
+              <input
+                type="checkbox"
+                checked={diarize}
+                onChange={(e) => setDiarize(e.target.checked)}
+                className="mt-1 accent-red-500"
+              />
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <Users2 size={14} className="text-zinc-400" />
+                  <span className="text-sm text-white">화자 분리 (Speaker turn detection)</span>
+                </div>
+                <p className="text-xs text-zinc-500 mt-1 leading-relaxed">
+                  화자가 바뀌는 시점을 자동 감지해 단락으로 구분합니다.
+                  설정에 HuggingFace 토큰이 등록돼 있어야 합니다. 전사 시간 약 1.3~1.8배 증가.
+                </p>
+              </div>
+            </label>
           </Field>
         </div>
 
