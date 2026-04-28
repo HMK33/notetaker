@@ -1,7 +1,9 @@
 import { useState } from "react";
-import { X, Eye, EyeOff, FolderOpen } from "lucide-react";
+import { X, Eye, EyeOff, FolderOpen, Plus, Trash2, Lock } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings, WhisperModel, AudioSource } from "../types";
+import { useTeamMembers } from "../hooks/useTeamMembers";
+import { useMeetingTypes } from "../hooks/useMeetingTypes";
 
 interface SettingsModalProps {
   settings: AppSettings;
@@ -173,7 +175,7 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
                   {
                     value: "system_and_mic" as AudioSource,
                     label: "시스템 오디오 + 마이크",
-                    desc: "Zoom / Google Meet 등 화상회의 (BlackHole 필요)",
+                    desc: "Zoom / Google Meet 등 화상회의 (첫 사용 시 화면 녹화 권한 필요)",
                   },
                 ] as const
               ).map((opt) => (
@@ -196,6 +198,22 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
                 </label>
               ))}
             </div>
+          </Section>
+
+          {/* 팀원 관리 */}
+          <Section title="팀원 관리">
+            <TeamMembersEditor />
+            <p className="text-zinc-600 text-xs mt-2">
+              새 미팅 시작 시 한 번 클릭으로 참석자 추가에 사용됩니다.
+            </p>
+          </Section>
+
+          {/* 미팅 유형 관리 */}
+          <Section title="미팅 유형">
+            <MeetingTypesEditor />
+            <p className="text-zinc-600 text-xs mt-2">
+              내부미팅·외부미팅은 기본 유형이라 삭제할 수 없습니다.
+            </p>
           </Section>
 
           {/* 저장 경로 */}
@@ -240,6 +258,156 @@ function Section({ title, children }: { title: string; children: React.ReactNode
         {title}
       </h3>
       {children}
+    </div>
+  );
+}
+
+function TeamMembersEditor() {
+  const { members, add, remove } = useTeamMembers();
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const handleAdd = async () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setBusy(true);
+    try {
+      await add(trimmed, role.trim() || null);
+      setName("");
+      setRole("");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      {members.length > 0 && (
+        <div className="space-y-1.5">
+          {members.map((m) => (
+            <div
+              key={m.id}
+              className="flex items-center justify-between px-3 py-2 bg-zinc-800 rounded-lg"
+            >
+              <div className="flex-1 min-w-0">
+                <span className="text-sm text-white">{m.name}</span>
+                {m.role && (
+                  <span className="text-xs text-zinc-500 ml-2">· {m.role}</span>
+                )}
+              </div>
+              <button
+                onClick={() => remove(m.id)}
+                className="text-zinc-500 hover:text-red-400 p-1 transition-colors"
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              handleAdd();
+            }
+          }}
+          placeholder="이름"
+          className="flex-1 bg-zinc-800 text-white rounded-lg px-3 py-2 text-sm placeholder:text-zinc-600 outline-none focus:ring-1 focus:ring-zinc-600"
+        />
+        <input
+          type="text"
+          value={role}
+          onChange={(e) => setRole(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              handleAdd();
+            }
+          }}
+          placeholder="직무 (선택)"
+          className="flex-1 bg-zinc-800 text-white rounded-lg px-3 py-2 text-sm placeholder:text-zinc-600 outline-none focus:ring-1 focus:ring-zinc-600"
+        />
+        <button
+          onClick={handleAdd}
+          disabled={busy || !name.trim()}
+          className="px-3 bg-zinc-700 hover:bg-zinc-600 disabled:opacity-30 rounded-lg text-zinc-300 hover:text-white transition-colors"
+        >
+          <Plus size={14} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MeetingTypesEditor() {
+  const { types, add, remove } = useMeetingTypes();
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const handleAdd = async () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setBusy(true);
+    try {
+      await add(trimmed);
+      setName("");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      {types.length > 0 && (
+        <div className="space-y-1.5">
+          {types.map((t) => (
+            <div
+              key={t.id}
+              className="flex items-center justify-between px-3 py-2 bg-zinc-800 rounded-lg"
+            >
+              <span className="text-sm text-white">{t.name}</span>
+              {t.is_builtin ? (
+                <Lock size={12} className="text-zinc-600" />
+              ) : (
+                <button
+                  onClick={() => remove(t.id)}
+                  className="text-zinc-500 hover:text-red-400 p-1 transition-colors"
+                >
+                  <Trash2 size={14} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              handleAdd();
+            }
+          }}
+          placeholder="새 유형 이름 (예: 인터뷰)"
+          className="flex-1 bg-zinc-800 text-white rounded-lg px-3 py-2 text-sm placeholder:text-zinc-600 outline-none focus:ring-1 focus:ring-zinc-600"
+        />
+        <button
+          onClick={handleAdd}
+          disabled={busy || !name.trim()}
+          className="px-3 bg-zinc-700 hover:bg-zinc-600 disabled:opacity-30 rounded-lg text-zinc-300 hover:text-white transition-colors"
+        >
+          <Plus size={14} />
+        </button>
+      </div>
     </div>
   );
 }

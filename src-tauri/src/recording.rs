@@ -9,8 +9,12 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use hound::{WavSpec, WavWriter, SampleFormat};
 
+#[cfg(target_os = "macos")]
+use crate::sck_capture::{self, SckCapture, SAMPLE_RATE as SCK_SAMPLE_RATE};
+
 const CHUNK_SAMPLES: usize = 60 * 16_000;   // 60초
-const MIN_FINAL_SAMPLES: usize = 3 * 16_000; // 최소 3초 이상일 때만 final chunk 저장
+const OVERLAP_SAMPLES: usize = 2 * 16_000;  // 청크 간 2초 오버랩 (경계 단어 잘림 방지)
+const MIN_FINAL_SAMPLES: usize = 16_000 / 2; // 최소 0.5초 이상일 때만 final chunk 저장
 const LEVEL_EMIT_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_RECORDING_DURATION: Duration = Duration::from_secs(3 * 60 * 60);
 
@@ -35,6 +39,8 @@ pub struct RecordingState {
     pub target_sample_rate: u32,
     pub output_path: Arc<Mutex<Option<PathBuf>>>,
     pub stream: Mutex<Option<cpal::Stream>>,
+    #[cfg(target_os = "macos")]
+    pub sck: Mutex<Option<SckCapture>>,
     pub chunk_index: Arc<AtomicU32>,
     pub chunks_dir: Arc<Mutex<Option<PathBuf>>>,
     // 처리 스레드가 소유하는 WAV writer/chunk buffer의 완료를 기다리기 위한 핸들
@@ -59,6 +65,8 @@ impl Default for RecordingState {
             target_sample_rate: 16000,
             output_path: Arc::new(Mutex::new(None)),
             stream: Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            sck: Mutex::new(None),
             chunk_index: Arc::new(AtomicU32::new(0)),
             chunks_dir: Arc::new(Mutex::new(None)),
             processor_handle: Mutex::new(None),
@@ -148,24 +156,163 @@ pub fn get_recordings_dir(recordings_path: &str) -> PathBuf {
     }
 }
 
-pub fn start_recording(
-    state: Arc<RecordingState>,
-    app: AppHandle,
-    device_name: Option<String>,
-    recordings_path: String,
-) -> Result<()> {
+/// 녹음 세션 공통 초기화: 좀비 정리, 출력/청크 경로 준비, 상태 초기화, mpsc 채널 생성.
+fn prepare_session(
+    state: &Arc<RecordingState>,
+    recordings_path: &str,
+) -> Result<(PathBuf, PathBuf, mpsc::Sender<Vec<f32>>, mpsc::Receiver<Vec<f32>>)> {
     if state.is_recording.load(Ordering::SeqCst) {
-        // 기존에 진행 중인 녹음이 있으면 (ex. 새로고침 시 좀비 프로세스) 강제로 중지합니다.
         state.is_recording.store(false, Ordering::SeqCst);
         *state.stream.lock().unwrap() = None;
+        #[cfg(target_os = "macos")]
+        { *state.sck.lock().unwrap() = None; }
         *state.audio_sender.lock().unwrap() = None;
         if let Some(handle) = state.processor_handle.lock().unwrap().take() {
             let _ = handle.join();
         }
     }
 
-    let host = cpal::default_host();
+    let recordings_dir = get_recordings_dir(recordings_path);
+    std::fs::create_dir_all(&recordings_dir)?;
+    let filename = Local::now().format("%Y%m%d_%H%M%S.wav").to_string();
+    let output_path = recordings_dir.join(&filename);
 
+    // 청크 임시 파일은 /tmp 세션별 서브디렉터리에 저장. 세션별 분리
+    // → 크래시 복구/동시 실행 안전. 시작 시 일괄 삭제 안 함 (이전 세션의
+    // 미처리 청크 보존). 개별 청크는 JS에서 전사 후 delete_audio_file로 삭제.
+    let session_id = Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let chunks_dir = std::env::temp_dir()
+        .join("notetaker_chunks")
+        .join(&session_id);
+    std::fs::create_dir_all(&chunks_dir)?;
+
+    *state.output_path.lock().unwrap() = Some(output_path.clone());
+    *state.start_time.lock().unwrap() = Some(Instant::now());
+    *state.chunks_dir.lock().unwrap() = Some(chunks_dir.clone());
+    state.chunk_index.store(0, Ordering::SeqCst);
+    state.is_paused.store(false, Ordering::SeqCst);
+    state.paused_duration_ms.store(0, Ordering::SeqCst);
+    *state.pause_start_time.lock().unwrap() = None;
+
+    let (tx, rx) = mpsc::channel::<Vec<f32>>();
+    *state.audio_sender.lock().unwrap() = Some(tx.clone());
+
+    Ok((output_path, chunks_dir, tx, rx))
+}
+
+/// 처리 스레드: PCM Vec<f32>를 받아서 다운믹스/리샘플/WAV 저장/청크 emit.
+/// 어떤 캡처 소스(cpal, SCK 등)가 보내든 동일하게 동작한다.
+fn spawn_processor(
+    state: Arc<RecordingState>,
+    app: AppHandle,
+    output_path: PathBuf,
+    chunks_dir: PathBuf,
+    rx: mpsc::Receiver<Vec<f32>>,
+    native_sample_rate: u32,
+    channels: usize,
+) -> std::thread::JoinHandle<()> {
+    let target_sample_rate = state.target_sample_rate;
+    let is_recording_proc = state.is_recording.clone();
+    let chunk_index_proc = state.chunk_index.clone();
+    let app_proc = app;
+
+    std::thread::spawn(move || {
+        let spec = WavSpec {
+            channels: 1,
+            sample_rate: target_sample_rate,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let mut wav_writer = WavWriter::create(&output_path, spec).ok();
+
+        let mut chunk_buffer: Vec<f32> = Vec::new();
+        let mut last_level_emit = Instant::now();
+        let mut level_accum: Vec<f32> = Vec::new();
+
+        let start = Instant::now();
+        let resample_ratio = target_sample_rate as f64 / native_sample_rate as f64;
+
+        while let Ok(raw_samples) = rx.recv() {
+            if start.elapsed() >= MAX_RECORDING_DURATION {
+                is_recording_proc.store(false, Ordering::SeqCst);
+                let _ = app_proc.emit(
+                    "recording-auto-stopped",
+                    serde_json::json!({"reason": "3시간 최대 녹음 시간 초과"}),
+                );
+                break;
+            }
+
+            let mono = downmix_to_mono(&raw_samples, channels);
+
+            level_accum.extend_from_slice(&mono);
+            if last_level_emit.elapsed() >= LEVEL_EMIT_INTERVAL {
+                let rms = compute_rms(&level_accum);
+                let _ = app_proc.emit("audio-level", serde_json::json!({"rms": rms}));
+                level_accum.clear();
+                last_level_emit = Instant::now();
+            }
+
+            // ratio가 1이면 (이미 16kHz로 들어오는 SCK 경로) 복사만 발생.
+            let resampled = if (resample_ratio - 1.0).abs() < f64::EPSILON {
+                mono
+            } else {
+                resample_linear(&mono, resample_ratio)
+            };
+
+            if let Some(ref mut writer) = wav_writer {
+                for &s in &resampled {
+                    let _ = writer.write_sample(f32_to_i16(s));
+                }
+            }
+
+            chunk_buffer.extend_from_slice(&resampled);
+            if chunk_buffer.len() >= CHUNK_SAMPLES {
+                let chunk_data: Vec<f32> = chunk_buffer[..CHUNK_SAMPLES].to_vec();
+                chunk_buffer.drain(..CHUNK_SAMPLES - OVERLAP_SAMPLES);
+
+                let idx = chunk_index_proc.fetch_add(1, Ordering::SeqCst);
+                let chunk_path = chunks_dir.join(format!("chunk_{idx}.wav"));
+
+                if write_chunk_wav(&chunk_data, &chunk_path, target_sample_rate).is_ok() {
+                    let _ = app_proc.emit("chunk-ready", serde_json::json!({
+                        "path": chunk_path.to_string_lossy(),
+                        "index": idx,
+                        "is_final": false,
+                        "has_overlap_prefix": idx > 0
+                    }));
+                }
+            }
+        }
+
+        if chunk_buffer.len() >= MIN_FINAL_SAMPLES {
+            let idx = chunk_index_proc.fetch_add(1, Ordering::SeqCst);
+            let chunk_path = chunks_dir.join(format!("chunk_{idx}.wav"));
+            if write_chunk_wav(&chunk_buffer, &chunk_path, target_sample_rate).is_ok() {
+                let _ = app_proc.emit("chunk-ready", serde_json::json!({
+                    "path": chunk_path.to_string_lossy(),
+                    "index": idx,
+                    "is_final": true,
+                    "has_overlap_prefix": idx > 0
+                }));
+            }
+        }
+
+        if let Some(writer) = wav_writer {
+            let _ = writer.finalize();
+        }
+    })
+}
+
+/// 마이크만 캡처 (cpal). 기존 동작.
+pub fn start_recording(
+    state: Arc<RecordingState>,
+    app: AppHandle,
+    device_name: Option<String>,
+    recordings_path: String,
+) -> Result<()> {
+    let (output_path, chunks_dir, tx, rx) = prepare_session(&state, &recordings_path)?;
+
+    let host = cpal::default_host();
     let device = if let Some(ref name) = device_name {
         host.input_devices()?
             .find(|d| d.name().map(|n| n == *name).unwrap_or(false))
@@ -178,132 +325,13 @@ pub fn start_recording(
     let config = device.default_input_config()?;
     let native_sample_rate = config.sample_rate().0;
     let channels = config.channels() as usize;
-    let target_sample_rate = state.target_sample_rate;
 
-    // 출력 파일 및 청크 디렉터리 준비
-    let recordings_dir = get_recordings_dir(&recordings_path);
-    std::fs::create_dir_all(&recordings_dir)?;
-    let filename = Local::now().format("%Y%m%d_%H%M%S.wav").to_string();
-    let output_path = recordings_dir.join(&filename);
-
-    // 청크 임시 파일은 /tmp에 저장 — Python 서브프로세스가 ~/Documents에
-    // 접근하려면 별도 TCC 권한이 필요하지만 /tmp는 제한 없음
-    let chunks_dir = std::env::temp_dir().join("notetaker_chunks");
-    // 이전 녹음의 청크 찌꺼기 정리
-    let _ = std::fs::remove_dir_all(&chunks_dir);
-    std::fs::create_dir_all(&chunks_dir)?;
-
-    // 상태 초기화
-    *state.output_path.lock().unwrap() = Some(output_path.clone());
-    *state.start_time.lock().unwrap() = Some(Instant::now());
-    *state.chunks_dir.lock().unwrap() = Some(chunks_dir.clone());
-    state.chunk_index.store(0, Ordering::SeqCst);
-    state.is_paused.store(false, Ordering::SeqCst);
-    state.paused_duration_ms.store(0, Ordering::SeqCst);
-    *state.pause_start_time.lock().unwrap() = None;
-
-    // mpsc 채널 생성 — 콜백 → 처리 스레드
-    let (tx, rx) = mpsc::channel::<Vec<f32>>();
-    *state.audio_sender.lock().unwrap() = Some(tx.clone());
-
-    // ── 처리 스레드: 리샘플링, WAV 쓰기, 청크 관리, 이벤트 emit ──
-    let is_recording_proc = state.is_recording.clone();
-    let chunk_index_proc = state.chunk_index.clone();
-    let app_proc = app.clone();
-
-    let processor = std::thread::spawn(move || {
-        // WAV writer (이 스레드가 단독 소유)
-        let spec = WavSpec {
-            channels: 1,
-            sample_rate: target_sample_rate,
-            bits_per_sample: 16,
-            sample_format: SampleFormat::Int,
-        };
-        let mut wav_writer = WavWriter::create(&output_path, spec).ok();
-
-        // 청크 버퍼 (이 스레드가 단독 소유 — Mutex 불필요)
-        let mut chunk_buffer: Vec<f32> = Vec::new();
-
-        // 이벤트 쓰로틀링
-        let mut last_level_emit = Instant::now();
-        let mut level_accum: Vec<f32> = Vec::new();
-
-        let start = Instant::now();
-        let resample_ratio = target_sample_rate as f64 / native_sample_rate as f64;
-
-        while let Ok(raw_samples) = rx.recv() {
-            // 3시간 타임아웃
-            if start.elapsed() >= MAX_RECORDING_DURATION {
-                is_recording_proc.store(false, Ordering::SeqCst);
-                let _ = app_proc.emit(
-                    "recording-auto-stopped",
-                    serde_json::json!({"reason": "3시간 최대 녹음 시간 초과"}),
-                );
-                break;
-            }
-
-            // 1. 다운믹스
-            let mono = downmix_to_mono(&raw_samples, channels);
-
-            // 2. 음량 레벨 (100ms 쓰로틀링)
-            level_accum.extend_from_slice(&mono);
-            if last_level_emit.elapsed() >= LEVEL_EMIT_INTERVAL {
-                let rms = compute_rms(&level_accum);
-                let _ = app_proc.emit("audio-level", serde_json::json!({"rms": rms}));
-                level_accum.clear();
-                last_level_emit = Instant::now();
-            }
-
-            // 3. 리샘플링
-            let resampled = resample_linear(&mono, resample_ratio);
-
-            // 4. WAV 파일 쓰기
-            if let Some(ref mut writer) = wav_writer {
-                for &s in &resampled {
-                    let _ = writer.write_sample(f32_to_i16(s));
-                }
-            }
-
-            // 5. 청크 관리 (즉시 크기 체크 — 1초 폴링 제거)
-            chunk_buffer.extend_from_slice(&resampled);
-            if chunk_buffer.len() >= CHUNK_SAMPLES {
-                let chunk_data: Vec<f32> = chunk_buffer.drain(..CHUNK_SAMPLES).collect();
-                let idx = chunk_index_proc.fetch_add(1, Ordering::SeqCst);
-                let chunk_path = chunks_dir.join(format!("chunk_{idx}.wav"));
-
-                if write_chunk_wav(&chunk_data, &chunk_path, target_sample_rate).is_ok() {
-                    let _ = app_proc.emit("chunk-ready", serde_json::json!({
-                        "path": chunk_path.to_string_lossy(),
-                        "index": idx,
-                        "is_final": false
-                    }));
-                }
-
-            }
-        }
-
-        // 녹음 종료 후 남은 청크 버퍼 → final chunk
-        if chunk_buffer.len() >= MIN_FINAL_SAMPLES {
-            let idx = chunk_index_proc.fetch_add(1, Ordering::SeqCst);
-            let chunk_path = chunks_dir.join(format!("chunk_{idx}.wav"));
-            if write_chunk_wav(&chunk_buffer, &chunk_path, target_sample_rate).is_ok() {
-                let _ = app_proc.emit("chunk-ready", serde_json::json!({
-                    "path": chunk_path.to_string_lossy(),
-                    "index": idx,
-                    "is_final": true
-                }));
-            }
-        }
-
-        // WAV writer 마무리
-        if let Some(writer) = wav_writer {
-            let _ = writer.finalize();
-        }
-    });
-
+    let processor = spawn_processor(
+        state.clone(), app.clone(), output_path, chunks_dir, rx,
+        native_sample_rate, channels,
+    );
     *state.processor_handle.lock().unwrap() = Some(processor);
 
-    // ── 오디오 콜백: 데이터를 채널로 전달만 (경량) ──
     let is_recording_cb = state.is_recording.clone();
     let is_paused_cb = state.is_paused.clone();
 
@@ -313,7 +341,6 @@ pub fn start_recording(
             if !is_recording_cb.load(Ordering::SeqCst) || is_paused_cb.load(Ordering::SeqCst) {
                 return;
             }
-            // 콜백은 데이터 복사 + channel send만 수행 (~0.1ms)
             let _ = tx.send(data.to_vec());
         },
         |err| eprintln!("오디오 스트림 오류: {err}"),
@@ -327,6 +354,68 @@ pub fn start_recording(
     Ok(())
 }
 
+/// 시스템 오디오 + 마이크 캡처 (macOS ScreenCaptureKit 기반).
+/// BlackHole 같은 가상 드라이버 불필요. 첫 호출 시 화면 녹화 권한 프롬프트.
+#[cfg(target_os = "macos")]
+pub fn start_recording_system_audio(
+    state: Arc<RecordingState>,
+    app: AppHandle,
+    recordings_path: String,
+    capture_mic: bool,
+) -> Result<()> {
+    if !sck_capture::check_permission() {
+        // 시스템 프롬프트 트리거 — 첫 호출은 false 반환할 수 있음.
+        sck_capture::request_permission();
+        return Err(anyhow::anyhow!(
+            "화면 녹화 권한이 필요합니다. 시스템 설정에서 Notetaker를 허용한 뒤 다시 시도해주세요."
+        ));
+    }
+
+    let (output_path, chunks_dir, tx, rx) = prepare_session(&state, &recordings_path)?;
+
+    let processor = spawn_processor(
+        state.clone(), app.clone(), output_path, chunks_dir, rx,
+        SCK_SAMPLE_RATE, 1,
+    );
+    *state.processor_handle.lock().unwrap() = Some(processor);
+
+    // SCK 콜백은 mpsc::Sender<Vec<f32>>로 직접 보낸다. pause 처리를 위해
+    // 한 단계 bridge 스레드를 두고 is_paused일 때만 drop. 종료는 SckCapture
+    // drop → Swift stop → bridge_tx drop → bridge_rx 닫힘으로 자연스레 처리.
+    let is_paused = state.is_paused.clone();
+    let (bridge_tx, bridge_rx) = mpsc::channel::<Vec<f32>>();
+    std::thread::spawn(move || {
+        while let Ok(samples) = bridge_rx.recv() {
+            if is_paused.load(Ordering::SeqCst) { continue; }
+            if tx.send(samples).is_err() { break; }
+        }
+    });
+
+    // is_recording을 먼저 true로 세트한 뒤 캡처 시작 → 첫 샘플 유실 최소화.
+    state.is_recording.store(true, Ordering::SeqCst);
+    let sck = match SckCapture::start(bridge_tx, capture_mic) {
+        Ok(s) => s,
+        Err(e) => {
+            state.is_recording.store(false, Ordering::SeqCst);
+            *state.audio_sender.lock().unwrap() = None;
+            return Err(e);
+        }
+    };
+    *state.sck.lock().unwrap() = Some(sck);
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn check_screen_recording_permission() -> bool {
+    sck_capture::check_permission()
+}
+
+#[cfg(target_os = "macos")]
+pub fn request_screen_recording_permission() -> bool {
+    sck_capture::request_permission()
+}
+
 pub fn stop_recording(state: Arc<RecordingState>, _app: AppHandle) -> Result<RecordingResult> {
     if !state.is_recording.load(Ordering::SeqCst) {
         return Err(anyhow::anyhow!("녹음 중이 아닙니다."));
@@ -337,6 +426,8 @@ pub fn stop_recording(state: Arc<RecordingState>, _app: AppHandle) -> Result<Rec
 
     // 2. 오디오 스트림 드랍 → 콜백 중지 → sender도 드랍
     *state.stream.lock().unwrap() = None;
+    #[cfg(target_os = "macos")]
+    { *state.sck.lock().unwrap() = None; }
     *state.audio_sender.lock().unwrap() = None;
 
     // 3. 처리 스레드 완료 대기 (WAV finalize + final chunk 저장)

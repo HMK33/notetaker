@@ -24,7 +24,7 @@ export function ProcessingView({ whisperModel }: ProcessingViewProps) {
       label: `Whisper 전사 중...${modelShortName ? ` (${modelShortName})` : ""}`,
       emoji: "📝",
     },
-    { key: "summarizing", label: "Gemini로 요약 생성 중...", emoji: "✨" },
+    { key: "summarizing", label: "AI 요약 생성 중...", emoji: "✨" },
   ];
 
 

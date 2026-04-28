@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' https://api.anthropic.com https://api.notion.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://asset.localhost"
+      "csp": "default-src 'self'; connect-src 'self' https://api.notion.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://asset.localhost"
     }
   },
   "bundle": {

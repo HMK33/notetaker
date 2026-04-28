@@ -8,7 +8,29 @@ export interface Meeting {
   transcript: string | null;
   summary: MeetingSummary | null;
   notion_page_id: string | null;
+  meeting_type: string | null;
+  attendees: string[] | null;
   created_at: string;
+}
+
+export interface TeamMember {
+  id: string;
+  name: string;
+  role: string | null;
+  sort_order: number;
+}
+
+export interface MeetingType {
+  id: string;
+  name: string;
+  sort_order: number;
+  is_builtin: boolean;
+}
+
+export interface MeetingSetup {
+  title: string | null;
+  meeting_type: string | null;
+  attendees: string[];
 }
 
 export interface MeetingSummary {

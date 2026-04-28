@@ -5,19 +5,43 @@ import { v4 as uuidv4 } from "uuid";
 import { useMeetingStore } from "../store/meetingStore";
 import { summarizeMeeting } from "../services/llm";
 import { saveMeeting, updateMeetingTranscript, updateMeetingSummary } from "../services/database";
-import type { RecordingResult, TranscriptResult, Meeting, AppSettings } from "../types";
+import type { RecordingResult, TranscriptResult, Meeting, AppSettings, MeetingSetup } from "../types";
 
-const ASSEMBLY_TIMEOUT_MS = 5 * 60 * 1000; // 전사 최대 대기 5분
+const ASSEMBLY_TIMEOUT_MS = 60 * 60 * 1000; // 전사 최대 대기 60분
 
 /**
- * 오버랩 청크 간 중복 텍스트를 제거하고 합침 (rust 측 오버랩 제거로 단순 병합 사용)
+ * 청크 경계의 오버랩 구간(2초)에서 중복된 텍스트를 제거하고 합침.
+ * Rust에서 인접 청크가 마지막/처음 2초를 공유하도록 저장 → 여기서
+ * 앞 청크 꼬리와 뒷 청크 머리의 워드 일치 구간을 찾아 뒷 청크에서 절삭.
+ * 일치가 없으면 휴리스틱 fallback (예상 오버랩 워드 수만큼 절삭)을 적용.
  */
+const OVERLAP_SEC = 2;
+const WORDS_PER_SEC_KO = 2.5; // 한국어 대략치 — fallback용
+
+function dedupeOverlap(prev: string, curr: string): string {
+  if (!prev || !curr) return curr;
+  const prevWords = prev.split(/\s+/).filter(Boolean);
+  const currWords = curr.split(/\s+/).filter(Boolean);
+  // 마지막/처음 최대 40워드 범위에서 가장 긴 완전 일치 찾기
+  const maxTry = Math.min(prevWords.length, currWords.length, 40);
+  for (let k = maxTry; k >= 3; k--) {
+    const prevTail = prevWords.slice(-k).join(" ");
+    const currHead = currWords.slice(0, k).join(" ");
+    if (prevTail === currHead) {
+      return currWords.slice(k).join(" ");
+    }
+  }
+  // Fallback: 일치 실패 시 대략적인 워드 수만큼 절삭 (중복보다는 소실이 요약엔 안전)
+  const expected = Math.round(OVERLAP_SEC * WORDS_PER_SEC_KO);
+  return currWords.slice(expected).join(" ");
+}
+
 function mergeOverlappingChunks(chunks: string[]): string {
   if (chunks.length === 0) return "";
   let result = chunks[0].trim();
 
   for (let i = 1; i < chunks.length; i++) {
-    const next = chunks[i].trim();
+    const next = dedupeOverlap(result, chunks[i].trim());
     if (!next) continue;
     result += (result ? " " : "") + next;
   }
@@ -55,6 +79,9 @@ export function useRecording(settings?: AppSettings) {
   // settings를 ref로 감싸서 이벤트 리스너 effect가 settings 변경 시 재등록되지 않도록 함
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+
+  // 미팅 시작 전 사용자가 입력한 메타데이터 (제목/유형/참석자)
+  const setupRef = useRef<MeetingSetup | null>(null);
 
   const tryAssemble = useCallback(() => {
     const total = totalChunksRef.current;
@@ -183,7 +210,7 @@ export function useRecording(settings?: AppSettings) {
   }, [setAudioLevel, setRecordingState, setError]);
 
   const startRecording = useCallback(
-    async (deviceName?: string) => {
+    async (setup?: MeetingSetup, deviceName?: string) => {
       try {
         setError(null);
         // 청크 상태 초기화
@@ -199,26 +226,17 @@ export function useRecording(settings?: AppSettings) {
         isProcessingChunk.current = false;
         prevChunkTailRef.current = "";
 
-        // audio_source 설정에 따라 디바이스 자동 선택
-        let resolvedDevice = deviceName ?? null;
-        if (!resolvedDevice && settingsRef.current?.audio_source === "system_and_mic") {
-          try {
-            const devices = await invoke<Array<{ name: string; is_blackhole: boolean }>>("list_audio_devices");
-            const blackhole = devices.find((d) => d.is_blackhole);
-            if (blackhole) {
-              resolvedDevice = blackhole.name;
-            } else {
-              setError("시스템 오디오 녹음을 위해 BlackHole이 필요합니다. 설치 후 다시 시도해주세요.");
-              return;
-            }
-          } catch {
-            // 디바이스 목록 조회 실패 시 기본 마이크 사용
-          }
-        }
+        // 사전 설정값 보관 — stop / 요약 단계에서 사용
+        setupRef.current = setup ?? null;
+
+        // 시스템 오디오 + 마이크 모드는 macOS ScreenCaptureKit 사용 (BlackHole 불필요).
+        // 첫 호출 시 권한이 없으면 시스템 프롬프트가 트리거되며 에러 메시지로 안내.
+        const source = settingsRef.current?.audio_source ?? "microphone";
 
         await invoke("start_recording", {
-          deviceName: resolvedDevice,
+          deviceName: deviceName ?? null,
           recordingsPath: settings?.recordings_path ?? null,
+          audioSource: source,
         });
         setRecordingState("recording");
       } catch (e) {
@@ -245,6 +263,7 @@ export function useRecording(settings?: AppSettings) {
 
         meetingIdRef.current = meetingId;
 
+        const setup = setupRef.current;
         const initialMeeting: Meeting = {
           id: meetingId,
           title,
@@ -255,6 +274,8 @@ export function useRecording(settings?: AppSettings) {
           transcript: null,
           summary: null,
           notion_page_id: null,
+          meeting_type: setup?.meeting_type ?? null,
+          attendees: setup?.attendees && setup.attendees.length > 0 ? setup.attendees : null,
           created_at: now,
         };
 
@@ -278,7 +299,15 @@ export function useRecording(settings?: AppSettings) {
         if (fullTranscript) {
           setProcessingStep("summarizing");
           try {
-            const summary = await summarizeMeeting(fullTranscript, memo, settingsRef.current?.claude_path);
+            const summary = await summarizeMeeting(
+              fullTranscript,
+              memo,
+              {
+                meeting_type: setup?.meeting_type ?? null,
+                attendees: setup?.attendees ?? null,
+              },
+              settingsRef.current?.claude_path,
+            );
             updateCurrentMeeting({ summary });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
@@ -334,10 +363,23 @@ export function useRecording(settings?: AppSettings) {
   );
 
   const retrySummary = useCallback(
-    async (transcript: string, memo: string | null, meetingId: string) => {
+    async (
+      transcript: string,
+      memo: string | null,
+      meetingId: string,
+      context?: { meeting_type: string | null; attendees: string[] | null }
+    ) => {
       try {
         setProcessingStep("summarizing");
-        const summary = await summarizeMeeting(transcript, memo, settingsRef.current?.claude_path);
+        const summary = await summarizeMeeting(
+          transcript,
+          memo,
+          {
+            meeting_type: context?.meeting_type ?? null,
+            attendees: context?.attendees ?? null,
+          },
+          settingsRef.current?.claude_path
+        );
         await updateMeetingSummary(meetingId, summary);
         updateCurrentMeeting({ summary });
         setProcessingStep(null);

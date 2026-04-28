@@ -5,6 +5,7 @@ import { useSettings } from "./hooks/useSettings";
 import { useRecording } from "./hooks/useRecording";
 import { useMeetings } from "./hooks/useMeetings";
 import { RecordingBar } from "./components/RecordingBar";
+import { MeetingSetupView } from "./components/MeetingSetupView";
 import { ProcessingView } from "./components/ProcessingView";
 import { SummaryView } from "./components/SummaryView";
 import { MeetingList } from "./components/MeetingList";
@@ -12,9 +13,9 @@ import { SettingsModal } from "./components/SettingsModal";
 import { getMeetings, updateMeetingSummary, updateNotionPageId } from "./services/database";
 import { summarizeMeeting } from "./services/llm";
 import { saveToNotion } from "./services/notion";
-import type { Meeting } from "./types";
+import type { Meeting, MeetingSetup } from "./types";
 
-type View = "home" | "list" | "result";
+type View = "home" | "setup" | "list" | "result";
 
 function useOnlineStatus() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -50,6 +51,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
   const [batchSummarizing, setBatchSummarizing] = useState(false);
+  const [pendingSetup, setPendingSetup] = useState<MeetingSetup | null>(null);
 
   useEffect(() => {
     loadMeetings();
@@ -86,6 +88,7 @@ export default function App() {
           const summary = await summarizeMeeting(
             meeting.transcript!,
             meeting.memo,
+            { meeting_type: meeting.meeting_type, attendees: meeting.attendees },
             settings.claude_path
           );
           await updateMeetingSummary(meeting.id, summary);
@@ -142,7 +145,19 @@ export default function App() {
     memo: string | null,
     meetingId: string
   ) => {
-    retrySummary(transcript, memo, meetingId);
+    const meeting = currentMeeting?.id === meetingId ? currentMeeting : null;
+    retrySummary(transcript, memo, meetingId, {
+      meeting_type: meeting?.meeting_type ?? null,
+      attendees: meeting?.attendees ?? null,
+    });
+  };
+
+  const handleNewMeeting = () => setView("setup");
+
+  const handleSetupStart = async (setup: MeetingSetup) => {
+    setPendingSetup(setup);
+    setView("home");
+    await startRecording(setup);
   };
 
   if (settingsLoading) {
@@ -242,10 +257,11 @@ export default function App() {
           <>
             {isRecordingOrIdle && (
               <RecordingBar
-                onStart={startRecording}
+                onNewMeeting={handleNewMeeting}
                 onStop={stopRecording}
                 onPause={pauseRecording}
                 onResume={resumeRecording}
+                initialTitle={pendingSetup?.title ?? ""}
               />
             )}
             {isProcessing && <ProcessingView whisperModel={settings.whisper_model} />}
@@ -268,6 +284,14 @@ export default function App() {
               </div>
             )}
           </>
+        )}
+
+        {/* 새 미팅 설정 */}
+        {view === "setup" && (
+          <MeetingSetupView
+            onCancel={() => setView("home")}
+            onStart={handleSetupStart}
+          />
         )}
 
         {/* 목록 */}

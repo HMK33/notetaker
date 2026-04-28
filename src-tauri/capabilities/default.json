@@ -18,6 +18,9 @@
     "shell:allow-execute",
     "shell:allow-open",
     "store:default",
-    "http:default"
+    "http:default",
+    "clipboard-manager:default",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-read-text"
   ]
 }

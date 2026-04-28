@@ -9,7 +9,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   whisper_model: "mlx-community/whisper-large-v3-mlx",
   recordings_path: "",
   audio_source: "microphone" as AudioSource,
-  python_path: "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
+  python_path: "/Users/kwon/Coding/notetaker/.venv/bin/python",
 };
 
 async function getStore() {

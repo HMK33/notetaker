@@ -1,4 +1,6 @@
 mod recording;
+#[cfg(target_os = "macos")]
+mod sck_capture;
 mod whisper_runner;
 
 use std::sync::{Arc, Mutex};
@@ -20,15 +22,56 @@ fn start_recording(
     state: State<RecordingStateHandle>,
     device_name: Option<String>,
     recordings_path: Option<String>,
+    audio_source: Option<String>,
 ) -> Result<(), String> {
+    let source = audio_source.unwrap_or_else(|| "microphone".to_string());
+    let recordings_path = recordings_path.unwrap_or_default();
+
+    if source == "system_and_mic" {
+        #[cfg(target_os = "macos")]
+        {
+            return recording::start_recording_system_audio(
+                state.inner().clone(),
+                app,
+                recordings_path,
+                /* capture_mic */ true,
+            )
+            .map_err(|e| e.to_string());
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            return Err("시스템 오디오 캡처는 macOS에서만 지원됩니다.".to_string());
+        }
+    }
+
     recording::start_recording(
         state.inner().clone(),
         app,
         device_name,
-        recordings_path.unwrap_or_default(),
+        recordings_path,
     )
     .map_err(|e| e.to_string())
 }
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn check_screen_recording_permission() -> bool {
+    recording::check_screen_recording_permission()
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn request_screen_recording_permission() -> bool {
+    recording::request_screen_recording_permission()
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn check_screen_recording_permission() -> bool { true }
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn request_screen_recording_permission() -> bool { true }
 
 #[tauri::command]
 fn stop_recording(app: tauri::AppHandle, state: State<RecordingStateHandle>) -> Result<RecordingResult, String> {
@@ -189,6 +232,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             list_audio_devices,
             start_recording,
@@ -200,6 +244,8 @@ pub fn run() {
             delete_audio_file,
             open_recordings_folder,
             run_claude_summary,
+            check_screen_recording_permission,
+            request_screen_recording_permission,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
