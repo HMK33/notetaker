@@ -105,7 +105,10 @@ impl WhisperServer {
 
 impl Drop for WhisperServer {
     fn drop(&mut self) {
-        let _ = self.child.kill();
+        if let Err(e) = self.child.kill() {
+            // ESRCH(이미 종료)는 정상이라 디버그로만 남김 — 좀비 프로세스 진단 용도
+            eprintln!("Whisper 서버 종료 시 kill 실패 (이미 종료됐을 수 있음): {e}");
+        }
         let _ = self.child.wait();
     }
 }

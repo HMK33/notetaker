@@ -56,6 +56,7 @@ export async function summarizeMeeting(
   memo: string | null,
   context: SummaryContext,
   claudePath?: string,
+  claudeModel?: string,
 ): Promise<MeetingSummary> {
   const truncatedTranscript =
     transcript.length > MAX_TRANSCRIPT_CHARS
@@ -75,6 +76,7 @@ export async function summarizeMeeting(
   const stdout = await invoke<string>("run_claude_summary", {
     prompt,
     claudePath: claudePath || undefined,
+    claudeModel: claudeModel || undefined,
   });
 
   const cliOutput = JSON.parse(stdout) as ClaudeCliOutput;

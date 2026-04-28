@@ -367,6 +367,7 @@ export function useRecording(settings?: AppSettings) {
                 attendees: setup?.attendees ?? null,
               },
               settingsRef.current?.claude_path,
+              settingsRef.current?.claude_model,
             );
             updateCurrentMeeting({ summary });
           } catch (e) {
@@ -438,7 +439,8 @@ export function useRecording(settings?: AppSettings) {
             meeting_type: context?.meeting_type ?? null,
             attendees: context?.attendees ?? null,
           },
-          settingsRef.current?.claude_path
+          settingsRef.current?.claude_path,
+          settingsRef.current?.claude_model
         );
         await updateMeetingSummary(meetingId, summary);
         updateCurrentMeeting({ summary });

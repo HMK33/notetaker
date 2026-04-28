@@ -4,12 +4,13 @@ import type { AppSettings, AudioSource } from "../types";
 
 const DEFAULT_SETTINGS: AppSettings = {
   claude_path: "claude",
+  claude_model: "",
   notion_api_key: "",
   notion_database_id: "",
   whisper_model: "mlx-community/whisper-large-v3-mlx",
   recordings_path: "",
   audio_source: "microphone" as AudioSource,
-  python_path: "/Users/kwon/Coding/notetaker/.venv/bin/python",
+  python_path: "",
   hf_token: "",
 };
 

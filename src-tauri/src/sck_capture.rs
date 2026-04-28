@@ -80,9 +80,10 @@ impl SckCapture {
 
     pub fn stop(&self) {
         if self.running.swap(false, Ordering::SeqCst) {
+            // notetaker_sck_stop은 Swift 측에서 SCStream/AVAudioEngine을 동기적으로 정리하고
+            // 콜백 큐가 비워질 때까지 기다린 뒤 반환한다. 이 시점 이후엔 trampoline이
+            // 다시 호출되지 않음이 보장되므로 CallbackCtx를 안전하게 회수할 수 있다.
             unsafe { notetaker_sck_stop(); }
-            // Swift no longer holds the callback; reclaim the context.
-            // Safe because notetaker_sck_stop blocks until streams are torn down.
             unsafe { drop(Box::from_raw(self.ctx)); }
         }
     }

@@ -13,8 +13,23 @@ import sys
 import json
 import os
 import re
+import contextlib
 
 _original_stderr = sys.stderr
+
+
+@contextlib.contextmanager
+def silenced_stderr():
+    """mlx_whisper progress bar deadlock 방지를 위해 stderr을 일시적으로 /dev/null로 리다이렉트.
+    파일 핸들이 with 종료 시 정상 닫힘."""
+    devnull = open(os.devnull, "w")
+    saved = sys.stderr
+    sys.stderr = devnull
+    try:
+        yield
+    finally:
+        sys.stderr = saved
+        devnull.close()
 
 # 다이어라이제이션 파이프라인 캐시 — 한 번 로드 후 재사용
 _diar_pipeline = None
@@ -26,8 +41,16 @@ def squash_repetitions(text: str) -> str:
     return re.sub(pattern, r"\1", text)
 
 
+def _mask_token(text: str, token: str) -> str:
+    """예외 메시지·로그에 토큰이 노출되지 않도록 치환."""
+    if token and token in text:
+        return text.replace(token, "<HF_TOKEN_REDACTED>")
+    return text
+
+
 def get_diar_pipeline(hf_token: str):
-    """pyannote 파이프라인 lazy load. 토큰이 바뀌면 재로드."""
+    """pyannote 파이프라인 lazy load. 토큰이 바뀌면 재로드.
+    실패 시 토큰 마스킹된 RuntimeError를 던짐."""
     global _diar_pipeline, _diar_token
     if _diar_pipeline is not None and _diar_token == hf_token:
         return _diar_pipeline
@@ -36,15 +59,24 @@ def get_diar_pipeline(hf_token: str):
     except ImportError:
         raise RuntimeError("pyannote.audio가 설치되지 않았습니다. pip install pyannote.audio")
 
-    _diar_pipeline = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization-3.1",
-        use_auth_token=hf_token,
-    )
-    if _diar_pipeline is None:
+    try:
+        pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=hf_token,
+        )
+    except Exception as e:
+        # 토큰이 잘못됐거나 약관 미동의 시 라이브러리가 토큰을 메시지에 포함할 수 있음
+        raise RuntimeError(
+            "pyannote 파이프라인 로드 실패: "
+            + _mask_token(str(e), hf_token)
+            + "\nHF 토큰 유효성 + https://huggingface.co/pyannote/speaker-diarization-3.1 약관 동의 확인하세요."
+        )
+    if pipeline is None:
         raise RuntimeError(
             "pyannote 파이프라인 로드 실패. HF 토큰이 유효한지, "
             "https://huggingface.co/pyannote/speaker-diarization-3.1 에서 약관 동의했는지 확인하세요."
         )
+    _diar_pipeline = pipeline
     _diar_token = hf_token
     return _diar_pipeline
 
@@ -140,11 +172,8 @@ def transcribe(audio_path: str, model: str, initial_prompt: str = "") -> None:
     if initial_prompt:
         kwargs["initial_prompt"] = initial_prompt
 
-    sys.stderr = open(os.devnull, "w")
-    try:
+    with silenced_stderr():
         result = mlx_whisper.transcribe(audio_path, **kwargs)
-    finally:
-        sys.stderr = _original_stderr
 
     print(json.dumps(build_output(result), ensure_ascii=False), flush=True)
 
@@ -157,8 +186,10 @@ def run_server(model: str, default_hf_token: str = "") -> None:
     except ImportError:
         sys.exit(1)
 
-    # stderr 억제 (mlx_whisper progress bar deadlock 방지)
-    sys.stderr = open(os.devnull, "w")
+    # 서버 모드는 전 구간 stderr 억제 (mlx_whisper progress bar deadlock 방지).
+    # 단발 호출과 달리 매 요청마다 wrap하지 않음 — 프로세스 종료 시 OS가 회수.
+    devnull = open(os.devnull, "w")
+    sys.stderr = devnull
 
     for line in sys.stdin:
         line = line.strip()
@@ -194,7 +225,8 @@ def run_server(model: str, default_hf_token: str = "") -> None:
                 try:
                     turns = diarize_turns(audio_path, hf_token)
                 except Exception as e:
-                    print(json.dumps({"error": f"화자 분리 실패: {e}"}), flush=True)
+                    msg = _mask_token(str(e), hf_token)
+                    print(json.dumps({"error": f"화자 분리 실패: {msg}"}), flush=True)
                     continue
 
             print(json.dumps(build_output(result, turns), ensure_ascii=False), flush=True)

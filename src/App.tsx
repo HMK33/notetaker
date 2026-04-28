@@ -89,7 +89,8 @@ export default function App() {
             meeting.transcript!,
             meeting.memo,
             { meeting_type: meeting.meeting_type, attendees: meeting.attendees },
-            settings.claude_path
+            settings.claude_path,
+            settings.claude_model
           );
           await updateMeetingSummary(meeting.id, summary);
 
