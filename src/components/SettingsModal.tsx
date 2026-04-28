@@ -1,9 +1,16 @@
-import { useState } from "react";
-import { X, Eye, EyeOff, FolderOpen, Plus, Trash2, Lock } from "lucide-react";
+import { useState, useEffect } from "react";
+import { X, Eye, EyeOff, FolderOpen, Plus, Trash2, Lock, CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings, WhisperModel, AudioSource } from "../types";
 import { useTeamMembers } from "../hooks/useTeamMembers";
 import { useMeetingTypes } from "../hooks/useMeetingTypes";
+
+interface ClaudeEnvStatus {
+  installed: boolean;
+  claude_path: string;
+  version: string | null;
+  error: string | null;
+}
 
 interface SettingsModalProps {
   settings: AppSettings;
@@ -95,19 +102,10 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
         <div className="p-5 space-y-5">
           {/* AI 설정 */}
           <Section title="AI 설정">
-            <div>
-              <label className="block text-xs text-zinc-400 mb-1.5">Claude CLI 경로</label>
-              <input
-                type="text"
-                value={form.claude_path}
-                onChange={(e) => update("claude_path")(e.target.value)}
-                placeholder="claude 또는 /usr/local/bin/claude"
-                className="w-full bg-zinc-900 text-white rounded-xl px-4 py-3 text-sm placeholder:text-zinc-600 outline-none focus:ring-1 focus:ring-zinc-600"
-              />
-              <p className="text-zinc-600 text-xs mt-1">
-                Claude Code CLI가 설치된 경로 (기본값: claude)
-              </p>
-            </div>
+            <ClaudeCliField
+              value={form.claude_path}
+              onChange={update("claude_path")}
+            />
           </Section>
 
           {/* Notion 설정 */}
@@ -247,6 +245,111 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function ClaudeCliField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [status, setStatus] = useState<ClaudeEnvStatus | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [autoTried, setAutoTried] = useState(false);
+
+  // 첫 마운트 시: 경로가 비었거나 디폴트("claude")면 자동 감지 시도
+  useEffect(() => {
+    if (autoTried) return;
+    setAutoTried(true);
+    (async () => {
+      const trimmed = value.trim();
+      if (trimmed === "" || trimmed === "claude") {
+        const detected = await invoke<string | null>("auto_detect_claude_path");
+        if (detected && detected !== value) {
+          onChange(detected);
+          await runCheck(detected);
+          return;
+        }
+      }
+      // 이미 경로 있으면 즉시 검증
+      if (trimmed) {
+        await runCheck(trimmed);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const runCheck = async (path: string) => {
+    setChecking(true);
+    try {
+      const result = await invoke<ClaudeEnvStatus>("check_claude_env", {
+        claudePath: path || null,
+      });
+      setStatus(result);
+    } catch (e) {
+      setStatus({
+        installed: false,
+        claude_path: path,
+        version: null,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div>
+      <label className="block text-xs text-zinc-400 mb-1.5">Claude CLI 경로</label>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => {
+            onChange(e.target.value);
+            setStatus(null);
+          }}
+          placeholder="claude 또는 /opt/homebrew/bin/claude"
+          className="flex-1 bg-zinc-900 text-white rounded-xl px-4 py-3 text-sm placeholder:text-zinc-600 outline-none focus:ring-1 focus:ring-zinc-600"
+        />
+        <button
+          type="button"
+          onClick={() => runCheck(value)}
+          disabled={checking}
+          className="px-4 rounded-xl bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-300 hover:text-white text-sm transition-colors whitespace-nowrap"
+        >
+          {checking ? <Loader2 size={14} className="animate-spin" /> : "연결 확인"}
+        </button>
+      </div>
+
+      {status && !checking && (
+        <div
+          className={`mt-2 flex items-start gap-2 text-xs ${
+            status.installed ? "text-emerald-400" : "text-red-400"
+          }`}
+        >
+          {status.installed ? (
+            <>
+              <CheckCircle2 size={14} className="shrink-0 mt-0.5" />
+              <span>
+                연결됨{status.version ? ` · ${status.version}` : ""}
+              </span>
+            </>
+          ) : (
+            <>
+              <XCircle size={14} className="shrink-0 mt-0.5" />
+              <span>{status.error ?? "Claude CLI를 찾을 수 없습니다."}</span>
+            </>
+          )}
+        </div>
+      )}
+
+      <p className="text-zinc-600 text-xs mt-2">
+        앱 첫 실행 시 일반적인 설치 경로를 자동으로 찾아 채웁니다. 못 찾으면 직접 입력 후 "연결 확인".
+      </p>
     </div>
   );
 }

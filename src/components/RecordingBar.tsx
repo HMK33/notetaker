@@ -1,6 +1,196 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, KeyboardEvent } from "react";
 import { Mic, Square, Pause, Play } from "lucide-react";
 import { useMeetingStore } from "../store/meetingStore";
+
+const INDENT = "  "; // 2-space indent
+
+// ── 노션 스타일 리스트 마커 ──
+// 불릿: -
+// 넘버: 레벨에 따라 1./2./3. → a./b./c. → i./ii./iii. (3단계 순환)
+type ListType = "bullet" | "numeric" | "letter" | "roman";
+
+interface ListInfo {
+  indent: string;
+  type: ListType;
+  count: number;          // 1-based; 불릿은 항상 1
+  prefix: string;         // 줄머리 전체(공백 + 마커 + 공백)
+  rest: string;           // 마커 뒤의 본문
+}
+
+const ROMAN_TABLE = ["", "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix",
+  "x", "xi", "xii", "xiii", "xiv", "xv", "xvi", "xvii", "xviii", "xix",
+  "xx", "xxi", "xxii", "xxiii", "xxiv", "xxv"];
+function nToRoman(n: number): string {
+  return ROMAN_TABLE[n] ?? `${n}`;
+}
+function romanToN(s: string): number {
+  const idx = ROMAN_TABLE.indexOf(s);
+  return idx > 0 ? idx : 0;
+}
+function nToLetter(n: number): string {
+  // 1 → a, 2 → b, ... 26 → z, 그 이후는 단순 wrap
+  return String.fromCharCode("a".charCodeAt(0) + ((n - 1) % 26));
+}
+function letterToN(s: string): number {
+  if (!/^[a-z]$/.test(s)) return 0;
+  return s.charCodeAt(0) - "a".charCodeAt(0) + 1;
+}
+
+// 들여쓰기 레벨(0,1,2,...)에서의 numbered 마커 종류
+function typeForLevel(level: number): Exclude<ListType, "bullet"> {
+  switch (level % 3) {
+    case 0: return "numeric";
+    case 1: return "letter";
+    default: return "roman";
+  }
+}
+
+function renderPrefix(indent: string, type: ListType, count: number): string {
+  if (type === "bullet") return `${indent}- `;
+  if (type === "numeric") return `${indent}${count}. `;
+  if (type === "letter") return `${indent}${nToLetter(count)}. `;
+  return `${indent}${nToRoman(count)}. `;
+}
+
+function parseListLine(line: string): ListInfo | null {
+  // 불릿
+  let m = line.match(/^(\s*)[-*]\s+/);
+  if (m) {
+    return { indent: m[1], type: "bullet", count: 1, prefix: m[0], rest: line.slice(m[0].length) };
+  }
+  // 숫자 마커 (1. 2. ...)
+  m = line.match(/^(\s*)(\d+)\.\s+/);
+  if (m) {
+    return { indent: m[1], type: "numeric", count: parseInt(m[2], 10) || 1, prefix: m[0], rest: line.slice(m[0].length) };
+  }
+  // 알파/로마 마커 (a. / b. / i. / ii. ...) — 들여쓰기 레벨로 우선 결정
+  m = line.match(/^(\s*)([a-z]+)\.\s+/i);
+  if (m) {
+    const indent = m[1];
+    const marker = m[2].toLowerCase();
+    const level = Math.floor(indent.length / INDENT.length);
+    // 마커 모양으로 후보 결정
+    const romanN = romanToN(marker);
+    const isRomanShape = romanN > 0;
+    const isSingleLetter = marker.length === 1;
+    // 레벨이 명확히 가리키는 타입을 우선
+    const typeByLevel = typeForLevel(level);
+    if (typeByLevel === "roman" && isRomanShape) {
+      return { indent, type: "roman", count: romanN, prefix: m[0], rest: line.slice(m[0].length) };
+    }
+    if (typeByLevel === "letter" && isSingleLetter) {
+      return { indent, type: "letter", count: letterToN(marker), prefix: m[0], rest: line.slice(m[0].length) };
+    }
+    // 레벨이 numeric인데 알파가 들어있는 경우는 무시 (리스트 아님)
+    // 그 외엔 모양으로 판단
+    if (isRomanShape && !isSingleLetter) {
+      return { indent, type: "roman", count: romanN, prefix: m[0], rest: line.slice(m[0].length) };
+    }
+    if (isSingleLetter) {
+      return { indent, type: "letter", count: letterToN(marker), prefix: m[0], rest: line.slice(m[0].length) };
+    }
+  }
+  return null;
+}
+
+/**
+ * 노션 스타일 키보드 핸들러:
+ * - 줄이 `- ` / `1. ` / `a. ` / `i. ` 형태이면 Enter로 다음 항목 자동 생성
+ *   (numeric은 +1, letter는 a→b, roman은 i→ii)
+ * - 빈 항목에서 Enter → 마커 제거 (리스트 탈출)
+ * - Tab: 들여쓰기 한 단계 + numbered 마커 종류 변경 (1→a, a→i)
+ * - Shift+Tab: 한 단계 outdent + 마커 종류 되돌림
+ * - 한글 IME 조합 중에는 무시
+ */
+function handleMarkdownKey(
+  e: KeyboardEvent<HTMLTextAreaElement>,
+  setMemo: (v: string) => void
+) {
+  if (e.nativeEvent.isComposing) return;
+  const el = e.currentTarget;
+  const value = el.value;
+  const selStart = el.selectionStart;
+  const selEnd = el.selectionEnd;
+  const lineStartOf = (pos: number) => value.lastIndexOf("\n", pos - 1) + 1;
+  const lineEndOf = (pos: number) => {
+    const i = value.indexOf("\n", pos);
+    return i === -1 ? value.length : i;
+  };
+  const apply = (newValue: string, newSelStart: number, newSelEnd?: number) => {
+    setMemo(newValue);
+    requestAnimationFrame(() => {
+      el.setSelectionRange(newSelStart, newSelEnd ?? newSelStart);
+      el.focus();
+    });
+  };
+
+  // ── Enter: 리스트 자동 이어쓰기 / 빈 항목 탈출 ──
+  if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.altKey && !e.ctrlKey) {
+    if (selStart !== selEnd) return;
+    const lineStart = lineStartOf(selStart);
+    const currentLine = value.slice(lineStart, selStart);
+    const info = parseListLine(currentLine);
+    if (!info) return;
+
+    e.preventDefault();
+    if (info.rest.length === 0) {
+      // 빈 항목 → 마커 통째로 제거하고 일반 줄로 빠져나감
+      const newValue = value.slice(0, lineStart) + value.slice(selStart);
+      apply(newValue, lineStart);
+    } else {
+      const nextCount = info.type === "bullet" ? 1 : info.count + 1;
+      const insert = "\n" + renderPrefix(info.indent, info.type, nextCount);
+      const newValue = value.slice(0, selStart) + insert + value.slice(selEnd);
+      apply(newValue, selStart + insert.length);
+    }
+    return;
+  }
+
+  // ── Tab / Shift+Tab ──
+  if (e.key === "Tab") {
+    e.preventDefault();
+    const lineStart = lineStartOf(selStart);
+    const lineEnd = lineEndOf(selStart);
+    const currentLine = value.slice(lineStart, lineEnd);
+    const info = parseListLine(currentLine);
+
+    // 리스트 줄이 아닌 경우 — 단순 indent/outdent (기존 동작 유지)
+    if (!info) {
+      if (e.shiftKey) {
+        if (currentLine.startsWith(INDENT)) {
+          const newValue = value.slice(0, lineStart) + currentLine.slice(INDENT.length) + value.slice(lineEnd);
+          const shift = INDENT.length;
+          apply(newValue, Math.max(lineStart, selStart - shift), Math.max(lineStart, selEnd - shift));
+        } else if (currentLine.startsWith(" ")) {
+          const newValue = value.slice(0, lineStart) + currentLine.slice(1) + value.slice(lineEnd);
+          apply(newValue, Math.max(lineStart, selStart - 1), Math.max(lineStart, selEnd - 1));
+        }
+      } else {
+        const newValue = value.slice(0, selStart) + INDENT + value.slice(selEnd);
+        apply(newValue, selStart + INDENT.length);
+      }
+      return;
+    }
+
+    // 리스트 줄 — 레벨 변경 + 마커 종류 변경 + count는 1로 리셋
+    const currentLevel = Math.floor(info.indent.length / INDENT.length);
+    const newLevel = e.shiftKey ? Math.max(0, currentLevel - 1) : currentLevel + 1;
+
+    // 레벨이 안 바뀌면 (top-level에서 Shift+Tab 등) 그대로 둠 — count 손실 방지
+    if (newLevel === currentLevel) return;
+
+    const newIndent = INDENT.repeat(newLevel);
+    const newType: ListType = info.type === "bullet" ? "bullet" : typeForLevel(newLevel);
+    const newPrefix = renderPrefix(newIndent, newType, 1);
+    const newLineText = newPrefix + info.rest;
+    const newValue = value.slice(0, lineStart) + newLineText + value.slice(lineEnd);
+
+    // 커서 위치 복원: 본문 내 상대 위치 보존
+    const cursorOffsetInRest = Math.max(0, selStart - (lineStart + info.prefix.length));
+    const newCursor = lineStart + newPrefix.length + cursorOffsetInRest;
+    apply(newValue, newCursor);
+  }
+}
 
 interface RecordingBarProps {
   onNewMeeting: () => void;
@@ -173,9 +363,11 @@ export function RecordingBar({
             <textarea
               value={memo}
               onChange={(e) => setMemo(e.target.value)}
+              onKeyDown={(e) => handleMarkdownKey(e, setMemo)}
               placeholder={
-                "예)\n- 결정: Q3까지 신규 가입자 1만 명 목표\n- 액션: 김OO이 광고 예산안 다음 주 월요일까지\n- 이슈: 인프라 비용 초과 우려\n"
+                "예)\n- 결정: Q3까지 신규 가입자 1만 명 목표\n- 액션: 김OO이 광고 예산안 다음 주 월요일까지\n  - Tab으로 들여쓰기, Enter로 같은 레벨 이어쓰기\n- 이슈: 인프라 비용 초과 우려"
               }
+              spellCheck={false}
               className="flex-1 bg-zinc-900 text-white rounded-xl px-4 py-3 text-sm placeholder:text-zinc-600 outline-none focus:ring-1 focus:ring-zinc-600 resize-none font-mono leading-relaxed"
             />
           </div>

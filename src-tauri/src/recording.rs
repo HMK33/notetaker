@@ -17,6 +17,9 @@ const OVERLAP_SAMPLES: usize = 2 * 16_000;  // 청크 간 2초 오버랩 (경계
 const MIN_FINAL_SAMPLES: usize = 16_000 / 2; // 최소 0.5초 이상일 때만 final chunk 저장
 const LEVEL_EMIT_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_RECORDING_DURATION: Duration = Duration::from_secs(3 * 60 * 60);
+// VAD 임계값. RMS가 이 값보다 낮으면 무음으로 간주 → Whisper 호출 생략.
+// 일반 회의 대화는 0.02~0.1 수준, 잡음/공조 소음은 보통 0.005 이하.
+const VAD_RMS_THRESHOLD: f32 = 0.005;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AudioDevice {
@@ -272,13 +275,19 @@ fn spawn_processor(
 
                 let idx = chunk_index_proc.fetch_add(1, Ordering::SeqCst);
                 let chunk_path = chunks_dir.join(format!("chunk_{idx}.wav"));
+                // VAD: 청크 전체 RMS가 무음 임계값 이하면 Whisper 안 돌리고
+                // 빈 텍스트로 처리. Whisper의 무음 구간 할루시네이션 방지.
+                let chunk_rms = compute_rms(&chunk_data);
+                let is_silent = chunk_rms < VAD_RMS_THRESHOLD;
 
                 if write_chunk_wav(&chunk_data, &chunk_path, target_sample_rate).is_ok() {
                     let _ = app_proc.emit("chunk-ready", serde_json::json!({
                         "path": chunk_path.to_string_lossy(),
                         "index": idx,
                         "is_final": false,
-                        "has_overlap_prefix": idx > 0
+                        "has_overlap_prefix": idx > 0,
+                        "is_silent": is_silent,
+                        "rms": chunk_rms,
                     }));
                 }
             }
@@ -287,12 +296,16 @@ fn spawn_processor(
         if chunk_buffer.len() >= MIN_FINAL_SAMPLES {
             let idx = chunk_index_proc.fetch_add(1, Ordering::SeqCst);
             let chunk_path = chunks_dir.join(format!("chunk_{idx}.wav"));
+            let chunk_rms = compute_rms(&chunk_buffer);
+            let is_silent = chunk_rms < VAD_RMS_THRESHOLD;
             if write_chunk_wav(&chunk_buffer, &chunk_path, target_sample_rate).is_ok() {
                 let _ = app_proc.emit("chunk-ready", serde_json::json!({
                     "path": chunk_path.to_string_lossy(),
                     "index": idx,
                     "is_final": true,
-                    "has_overlap_prefix": idx > 0
+                    "has_overlap_prefix": idx > 0,
+                    "is_silent": is_silent,
+                    "rms": chunk_rms,
                 }));
             }
         }

@@ -136,6 +136,89 @@ async fn check_python_env(
     whisper_runner::check_python_env(&app, &python_path).await
 }
 
+#[derive(serde::Serialize)]
+struct ClaudeEnvStatus {
+    installed: bool,
+    claude_path: String,
+    version: Option<String>,
+    error: Option<String>,
+}
+
+/// Claude CLI 실행 가능 여부 + 버전 확인. `claude --version` 호출.
+#[tauri::command]
+async fn check_claude_env(claude_path: Option<String>) -> ClaudeEnvStatus {
+    let path = claude_path.unwrap_or_else(|| "claude".to_string());
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::process::Command::new(&path)
+            .arg("--version")
+            .output(),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(output)) if output.status.success() => {
+            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            ClaudeEnvStatus {
+                installed: true,
+                claude_path: path,
+                version: Some(version),
+                error: None,
+            }
+        }
+        Ok(Ok(output)) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            ClaudeEnvStatus {
+                installed: false,
+                claude_path: path,
+                version: None,
+                error: Some(if stderr.is_empty() { "실행 실패".to_string() } else { stderr }),
+            }
+        }
+        Ok(Err(e)) => ClaudeEnvStatus {
+            installed: false,
+            claude_path: path,
+            version: None,
+            error: Some(format!("실행 불가: {e}")),
+        },
+        Err(_) => ClaudeEnvStatus {
+            installed: false,
+            claude_path: path,
+            version: None,
+            error: Some("응답 시간 초과 (5초)".to_string()),
+        },
+    }
+}
+
+/// 흔한 설치 위치들에서 claude 바이너리를 찾아 첫 번째로 실행 가능한 경로 반환.
+#[tauri::command]
+async fn auto_detect_claude_path() -> Option<String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let candidates = vec![
+        "claude".to_string(),
+        "/opt/homebrew/bin/claude".to_string(),
+        "/usr/local/bin/claude".to_string(),
+        format!("{home}/.local/bin/claude"),
+        format!("{home}/.claude/local/claude"),
+        format!("{home}/.npm-global/bin/claude"),
+        format!("{home}/.bun/bin/claude"),
+    ];
+
+    for path in candidates {
+        let ok = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            tokio::process::Command::new(&path).arg("--version").output(),
+        )
+        .await;
+        if let Ok(Ok(output)) = ok {
+            if output.status.success() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
 #[tauri::command]
 fn pause_recording(state: State<RecordingStateHandle>) -> Result<(), String> {
     recording::pause_recording(state.inner().clone()).map_err(|e| e.to_string())
@@ -241,6 +324,8 @@ pub fn run() {
             resume_recording,
             run_whisper,
             check_python_env,
+            check_claude_env,
+            auto_detect_claude_path,
             delete_audio_file,
             open_recordings_folder,
             run_claude_summary,

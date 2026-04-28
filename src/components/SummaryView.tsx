@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { Copy, RefreshCw, Upload, Check, AlertTriangle, Clock } from "lucide-react";
+import { Copy, RefreshCw, Upload, Check, AlertTriangle, Clock, Calendar, Timer, Tag, Users } from "lucide-react";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { format } from "date-fns";
 import { useMeetingStore } from "../store/meetingStore";
 import { saveToNotion } from "../services/notion";
 import { updateNotionPageId } from "../services/database";
-import type { AppSettings, MeetingSummary } from "../types";
+import type { AppSettings, Meeting, MeetingSummary } from "../types";
 
 interface SummaryViewProps {
   settings: AppSettings;
@@ -25,7 +26,7 @@ export function SummaryView({ settings, onRetrySummary }: SummaryViewProps) {
   const handleCopy = async () => {
     const text =
       activeTab === "summary"
-        ? formatSummaryText(summary)
+        ? formatSummaryText(currentMeeting, summary)
         : (transcript ?? "전사 결과가 없습니다.");
     await writeText(text);
     setCopied(true);
@@ -75,6 +76,7 @@ export function SummaryView({ settings, onRetrySummary }: SummaryViewProps) {
 
       {/* 내용 */}
       <div className="flex-1 overflow-y-auto p-4">
+        <MeetingMetadata meeting={currentMeeting} />
         {activeTab === "summary" ? (
           <SummaryContent summary={summary} />
         ) : (
@@ -259,6 +261,49 @@ function SummaryContent({ summary }: { summary: MeetingSummary | null }) {
   );
 }
 
+function MeetingMetadata({ meeting }: { meeting: Meeting }) {
+  const recordedAt = format(new Date(meeting.recorded_at), "yyyy.MM.dd HH:mm");
+  const durationMin = (meeting.duration_sec / 60).toFixed(1);
+  const hasAttendees = meeting.attendees && meeting.attendees.length > 0;
+  const hasType = !!meeting.meeting_type;
+
+  return (
+    <div className="mb-6 pb-4 border-b border-zinc-900">
+      <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-zinc-500">
+        <span className="flex items-center gap-1.5">
+          <Calendar size={12} />
+          {recordedAt}
+        </span>
+        <span className="flex items-center gap-1.5">
+          <Timer size={12} />
+          {durationMin}분
+        </span>
+        {hasType && (
+          <span className="flex items-center gap-1.5">
+            <Tag size={12} />
+            {meeting.meeting_type}
+          </span>
+        )}
+      </div>
+      {hasAttendees && (
+        <div className="mt-3 flex items-start gap-2">
+          <Users size={12} className="text-zinc-500 mt-1 shrink-0" />
+          <div className="flex flex-wrap gap-1.5">
+            {meeting.attendees!.map((name) => (
+              <span
+                key={name}
+                className="text-xs bg-zinc-900 border border-zinc-800 text-zinc-300 px-2 py-0.5 rounded-full"
+              >
+                {name}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Section({ label, title, children }: { label: string; title: string; children: React.ReactNode }) {
   return (
     <div>
@@ -271,11 +316,25 @@ function Section({ label, title, children }: { label: string; title: string; chi
   );
 }
 
-function formatSummaryText(summary: MeetingSummary | null): string {
+function formatSummaryText(meeting: Meeting, summary: MeetingSummary | null): string {
   if (!summary) return "요약 결과가 없습니다.";
   const { executive_summary: es, key_decisions, detailed_discussion, action_items, blocking_issues, parking_lot } = summary;
 
+  const recordedAt = format(new Date(meeting.recorded_at), "yyyy.MM.dd HH:mm");
+  const durationMin = (meeting.duration_sec / 60).toFixed(1);
+
+  const headerLines = [
+    `# ${meeting.title ?? "회의록"}`,
+    "",
+    `📅 ${recordedAt} · ⏱ ${durationMin}분${meeting.meeting_type ? ` · 🏷 ${meeting.meeting_type}` : ""}`,
+  ];
+  if (meeting.attendees && meeting.attendees.length > 0) {
+    headerLines.push(`👥 참석자: ${meeting.attendees.join(", ")}`);
+  }
+  headerLines.push("");
+
   const lines = [
+    ...headerLines,
     `## 1. Executive Summary`,
     `- 회의 목적: ${es.purpose}`,
     `- 주요 결론:\n${es.main_conclusions.map(c => `  • ${c}`).join("\n")}`,

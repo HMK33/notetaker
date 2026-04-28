@@ -9,6 +9,31 @@ import type { RecordingResult, TranscriptResult, Meeting, AppSettings, MeetingSe
 
 const ASSEMBLY_TIMEOUT_MS = 60 * 60 * 1000; // 전사 최대 대기 60분
 
+// Whisper의 알려진 환각(hallucination) 패턴.
+// 무음/노이즈 구간에서 학습 데이터(유튜브 자막 등)의 정형 문구를 우겨넣는 현상.
+// VAD로 1차 차단하고, 그래도 새는 문구는 텍스트 단계에서 제거.
+const HALLUCINATION_PATTERNS: RegExp[] = [
+  /Jenny[\s,]+Jenny/gi,
+  /視聴ありがとうございました/g,
+  /ご(?:清|靜|静)聴ありがとうございました/g,
+  /字幕\s*by/gi,
+  /(?:Subtitles?|Captions?)\s+by\s+\S+/gi,
+  /MBC\s*뉴스\s*\S*/g,
+  /Thank(?:s| you)\s+for\s+watching/gi,
+  /Please\s+subscribe/gi,
+  /구독(?:과|,)\s*좋아요/g,
+  /다이아몬드에\s*넣어서\s*사용할게요/g,
+  /이\s*영상은\s*유익하게\s*보셨다면/g,
+];
+
+function cleanHallucinations(text: string): string {
+  let cleaned = text;
+  for (const pat of HALLUCINATION_PATTERNS) {
+    cleaned = cleaned.replace(pat, " ");
+  }
+  return cleaned.replace(/\s{2,}/g, " ").trim();
+}
+
 /**
  * 청크 경계의 오버랩 구간(2초)에서 중복된 텍스트를 제거하고 합침.
  * Rust에서 인접 청크가 마지막/처음 2초를 공유하도록 저장 → 여기서
@@ -72,7 +97,7 @@ export function useRecording(settings?: AppSettings) {
   const assembleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Whisper 큐: 동시 실행 1개 제한
-  const chunkQueue = useRef<Array<{ path: string; index: number }>>([]);
+  const chunkQueue = useRef<Array<{ path: string; index: number; isSilent: boolean }>>([]);
   const isProcessingChunk = useRef(false);
   // 이전 청크 마지막 문장 (다음 청크의 initial_prompt로 사용)
   const prevChunkTailRef = useRef<string>("");
@@ -123,7 +148,18 @@ export function useRecording(settings?: AppSettings) {
   const processNextChunk = useCallback(async () => {
     if (isProcessingChunk.current || chunkQueue.current.length === 0) return;
     isProcessingChunk.current = true;
-    const { path, index } = chunkQueue.current.shift()!;
+    const { path, index, isSilent } = chunkQueue.current.shift()!;
+
+    // VAD: 무음 청크는 Whisper 호출 생략. 빈 텍스트로 처리.
+    if (isSilent) {
+      chunkTranscripts.current.set(index, "");
+      invoke("delete_audio_file", { audioPath: path }).catch(() => {});
+      tryAssemble();
+      isProcessingChunk.current = false;
+      processNextChunk();
+      return;
+    }
+
     // initial_prompt: 메모 + 이전 청크 마지막 ~150자
     const memoHint = memoRef.current ? `회의 주제: ${memoRef.current}. ` : "";
     const initialPrompt = (memoHint + prevChunkTailRef.current).trim();
@@ -135,10 +171,10 @@ export function useRecording(settings?: AppSettings) {
         model: settingsRef.current?.whisper_model,
         initialPrompt: initialPrompt || undefined,
       });
-      const text = result.text.trim();
-      chunkTranscripts.current.set(index, text);
+      const cleaned = cleanHallucinations(result.text);
+      chunkTranscripts.current.set(index, cleaned);
       // 다음 청크 품질을 위해 현재 청크 끝 ~150자 보존
-      prevChunkTailRef.current = text.slice(-150);
+      prevChunkTailRef.current = cleaned.slice(-150);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`[Whisper] 청크 ${index} 전사 실패:`, msg);
@@ -179,13 +215,19 @@ export function useRecording(settings?: AppSettings) {
 
       // 청크 전사 처리 — 큐 + 동시실행 1개 제한 (RAM 폭주 방지)
       // processNextChunkRef를 통해 호출 → listener 재등록 없이 항상 최신 함수 참조
-      const unlisten3 = await listen<{ path: string; index: number; is_final: boolean }>(
-        "chunk-ready",
-        (e) => {
-          chunkQueue.current.push({ path: e.payload.path, index: e.payload.index });
-          processNextChunkRef.current();
-        }
-      );
+      const unlisten3 = await listen<{
+        path: string;
+        index: number;
+        is_final: boolean;
+        is_silent?: boolean;
+      }>("chunk-ready", (e) => {
+        chunkQueue.current.push({
+          path: e.payload.path,
+          index: e.payload.index,
+          isSilent: e.payload.is_silent === true,
+        });
+        processNextChunkRef.current();
+      });
 
       // effect가 이미 cleanup됐으면 방금 등록한 리스너를 즉시 해제
       if (cancelled) {

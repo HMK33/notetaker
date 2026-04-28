@@ -32,8 +32,7 @@ export function MeetingSetupView({ onCancel, onStart }: Props) {
   const addAttendee = (name: string) => {
     const trimmed = name.trim();
     if (!trimmed) return;
-    if (attendees.includes(trimmed)) return;
-    setAttendees((prev) => [...prev, trimmed]);
+    setAttendees((prev) => (prev.includes(trimmed) ? prev : [...prev, trimmed]));
   };
 
   const removeAttendee = (name: string) => {
@@ -41,7 +40,9 @@ export function MeetingSetupView({ onCancel, onStart }: Props) {
   };
 
   const handleAddExternal = () => {
-    addAttendee(externalInput);
+    const value = externalInput.trim();
+    if (!value) return;
+    addAttendee(value);
     setExternalInput("");
     externalRef.current?.focus();
   };
@@ -60,6 +61,7 @@ export function MeetingSetupView({ onCancel, onStart }: Props) {
         {/* 상단 */}
         <div className="flex items-center gap-3 mb-8">
           <button
+            type="button"
             onClick={onCancel}
             className="p-1.5 -ml-1.5 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-white transition-colors"
           >
@@ -148,15 +150,20 @@ export function MeetingSetupView({ onCancel, onStart }: Props) {
                     return (
                       <button
                         key={m.id}
-                        onClick={() => !already && addAttendee(label)}
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (!already) addAttendee(label);
+                        }}
                         disabled={already}
                         className={`text-xs px-3 py-1.5 rounded-full border transition-all ${
                           already
-                            ? "bg-zinc-900 border-zinc-800 text-zinc-600 cursor-not-allowed"
-                            : "bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800 hover:border-zinc-600 hover:text-white active:scale-95"
+                            ? "bg-zinc-800/50 border-zinc-800 text-zinc-600 cursor-not-allowed"
+                            : "bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800 hover:border-zinc-600 hover:text-white active:scale-95 cursor-pointer"
                         }`}
                       >
-                        <span className="text-zinc-400 mr-1">+</span>
+                        <span className="text-zinc-400 mr-1">{already ? "✓" : "+"}</span>
                         {label}
                       </button>
                     );
@@ -175,7 +182,8 @@ export function MeetingSetupView({ onCancel, onStart }: Props) {
                   value={externalInput}
                   onChange={(e) => setExternalInput(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") {
+                    // 한글 IME 조합 중 Enter 무시 (글자 미확정 상태에서 빈값 추가 방지)
+                    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                       e.preventDefault();
                       handleAddExternal();
                     }
@@ -184,9 +192,10 @@ export function MeetingSetupView({ onCancel, onStart }: Props) {
                   className="flex-1 bg-zinc-900 border border-zinc-800 text-white rounded-xl px-4 py-2.5 text-sm placeholder:text-zinc-600 outline-none focus:border-zinc-600 transition-colors"
                 />
                 <button
+                  type="button"
                   onClick={handleAddExternal}
                   disabled={!externalInput.trim()}
-                  className="px-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 disabled:cursor-not-allowed text-zinc-300 hover:text-white transition-colors"
+                  className="px-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 disabled:cursor-not-allowed text-zinc-300 hover:text-white transition-colors cursor-pointer"
                 >
                   <Plus size={16} />
                 </button>
@@ -203,14 +212,16 @@ export function MeetingSetupView({ onCancel, onStart }: Props) {
         {/* 시작 버튼 */}
         <div className="mt-10 flex justify-end gap-3">
           <button
+            type="button"
             onClick={onCancel}
             className="px-5 py-3 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-900 text-sm transition-colors"
           >
             취소
           </button>
           <button
+            type="button"
             onClick={handleStart}
-            className="flex items-center gap-2 px-6 py-3 rounded-xl bg-red-600 hover:bg-red-500 active:scale-[0.98] text-white text-sm font-medium shadow-lg shadow-red-900/30 transition-all"
+            className="flex items-center gap-2 px-6 py-3 rounded-xl bg-red-600 hover:bg-red-500 active:scale-[0.98] text-white text-sm font-medium shadow-lg shadow-red-900/30 transition-all cursor-pointer"
           >
             <Mic size={16} />
             녹음 시작
@@ -261,8 +272,13 @@ function Chip({
       {label}
       {onRemove && (
         <button
-          onClick={onRemove}
-          className="ml-0.5 w-4 h-4 rounded-full hover:bg-zinc-700 flex items-center justify-center text-zinc-400 hover:text-white transition-colors"
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onRemove();
+          }}
+          className="ml-0.5 w-4 h-4 rounded-full hover:bg-zinc-700 flex items-center justify-center text-zinc-400 hover:text-white transition-colors cursor-pointer"
         >
           <X size={11} />
         </button>
