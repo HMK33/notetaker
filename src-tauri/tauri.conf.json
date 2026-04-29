@@ -10,14 +10,30 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
+        "label": "splash",
+        "title": "ttiro",
+        "width": 400,
+        "height": 400,
+        "decorations": false,
+        "transparent": true,
+        "center": true,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false
+      },
+      {
+        "label": "main",
         "title": "ttiro",
         "width": 900,
         "height": 700,
         "minWidth": 800,
         "minHeight": 600,
-        "resizable": true
+        "resizable": true,
+        "visible": false
       }
     ],
     "security": {

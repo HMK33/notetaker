@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { getCurrentWebviewWindow, WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Settings, List, ArrowLeft, AlertCircle, X, WifiOff, Sparkles } from "lucide-react";
 import { useMeetingStore } from "./store/meetingStore";
 import { useSettings } from "./hooks/useSettings";
@@ -18,6 +19,14 @@ import type { Meeting, MeetingSetup } from "./types";
 
 type View = "home" | "setup" | "list" | "result";
 
+const WINDOW_LABEL = (() => {
+  try {
+    return getCurrentWebviewWindow().label;
+  } catch {
+    return "main";
+  }
+})();
+
 function useOnlineStatus() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   useEffect(() => {
@@ -33,7 +42,42 @@ function useOnlineStatus() {
   return isOnline;
 }
 
+function SplashWindow() {
+  useEffect(() => {
+    // 윈도우 전체가 투명하게 보이도록 body 배경도 투명 처리.
+    // Splash 전용 webview라 main 윈도우엔 영향 없음.
+    document.documentElement.style.background = "transparent";
+    document.body.style.background = "transparent";
+
+    const timer = setTimeout(async () => {
+      try {
+        const main = await WebviewWindow.getByLabel("main");
+        if (main) await main.show();
+        await getCurrentWebviewWindow().close();
+      } catch (e) {
+        console.error("splash → main 전환 실패:", e);
+      }
+    }, 1800);
+    return () => clearTimeout(timer);
+  }, []);
+
+  return (
+    <div className="fixed inset-0 flex items-center justify-center" style={{ background: "transparent" }}>
+      <img
+        src="/symbol.png"
+        alt="ttiro"
+        className="w-full h-full object-contain"
+        draggable={false}
+      />
+    </div>
+  );
+}
+
 export default function App() {
+  if (WINDOW_LABEL === "splash") {
+    return <SplashWindow />;
+  }
+
   const {
     recordingState,
     currentMeeting,
