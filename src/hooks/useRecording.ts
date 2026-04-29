@@ -6,6 +6,7 @@ import { useMeetingStore } from "../store/meetingStore";
 import { summarizeMeeting } from "../services/llm";
 import { saveMeeting, updateMeetingTranscript, updateMeetingSummary } from "../services/database";
 import type { RecordingResult, TranscriptResult, Meeting, AppSettings, MeetingSetup } from "../types";
+import { effectiveHfToken } from "../utils/env";
 
 const ASSEMBLY_TIMEOUT_MS = 60 * 60 * 1000; // 전사 최대 대기 60분
 
@@ -169,7 +170,9 @@ export function useRecording(settings?: AppSettings) {
     // VAD: 무음 청크는 Whisper 호출 생략. 빈 텍스트로 처리.
     if (isSilent) {
       chunkTranscripts.current.set(index, "");
-      invoke("delete_audio_file", { audioPath: path }).catch(() => {});
+      invoke("delete_audio_file", { audioPath: path }).catch((e) =>
+        console.warn(`[chunk] 임시 파일 삭제 실패 (${path}):`, e)
+      );
       tryAssemble();
       isProcessingChunk.current = false;
       processNextChunk();
@@ -180,14 +183,22 @@ export function useRecording(settings?: AppSettings) {
     const memoHint = memoRef.current ? `회의 주제: ${memoRef.current}. ` : "";
     const initialPrompt = (memoHint + prevChunkTailRef.current).trim();
 
+    // 방어선: 화자 분리 요청됐어도 토큰 없으면 일반 모드로 fallback.
+    // (UI에서 비활성화 처리하지만 settings 변경 타이밍 등 race도 방지)
+    // 사용자 설정 토큰 → 빌드 시 baked-in env 토큰 순으로 사용.
+    const hfToken = effectiveHfToken(settingsRef.current?.hf_token);
+    const wantsDiarize = (setupRef.current?.diarize ?? false) && hfToken.length > 0;
+
     try {
       const result = await invoke<TranscriptResult>("run_whisper", {
-        audioPath: path,
-        pythonPath: settingsRef.current?.python_path,
-        model: settingsRef.current?.whisper_model,
-        initialPrompt: initialPrompt || undefined,
-        diarize: setupRef.current?.diarize ?? false,
-        hfToken: settingsRef.current?.hf_token || undefined,
+        options: {
+          audioPath: path,
+          pythonPath: settingsRef.current?.python_path,
+          model: settingsRef.current?.whisper_model,
+          initialPrompt: initialPrompt || undefined,
+          diarize: wantsDiarize,
+          hfToken: hfToken || undefined,
+        },
       });
       const cleaned = cleanHallucinations(result.text);
       chunkTranscripts.current.set(index, cleaned);
@@ -200,7 +211,9 @@ export function useRecording(settings?: AppSettings) {
       // 사용자에게 부분 전사 실패 알림
       setError(`일부 구간(${index + 1}번) 전사 실패 — 해당 구간은 비어있습니다.`);
     } finally {
-      invoke("delete_audio_file", { audioPath: path }).catch(() => {});
+      invoke("delete_audio_file", { audioPath: path }).catch((e) =>
+        console.warn(`[chunk] 임시 파일 삭제 실패 (${path}):`, e)
+      );
       tryAssemble();
       isProcessingChunk.current = false;
       // 큐에 남은 청크가 있으면 다음 처리
@@ -407,9 +420,11 @@ export function useRecording(settings?: AppSettings) {
       try {
         setProcessingStep("transcribing");
         const result = await invoke<TranscriptResult>("run_whisper", {
-          audioPath,
-          pythonPath: settings?.python_path,
-          model: settings?.whisper_model,
+          options: {
+            audioPath,
+            pythonPath: settings?.python_path,
+            model: settings?.whisper_model,
+          },
         });
         await updateMeetingTranscript(meetingId, result.text);
         updateCurrentMeeting({ transcript: result.text });

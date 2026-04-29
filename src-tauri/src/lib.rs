@@ -78,17 +78,26 @@ fn stop_recording(app: tauri::AppHandle, state: State<RecordingStateHandle>) -> 
     recording::stop_recording(state.inner().clone(), app).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-async fn run_whisper(
-    app: tauri::AppHandle,
-    whisper_server: State<'_, WhisperServerHandle>,
+/// JS에서 invoke('run_whisper', { ... })로 넘겨주는 옵션 묶음.
+/// 인자 너무 많아서 구조체로 묶음. 모두 optional이라 누락 시 기본값.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WhisperOptions {
     audio_path: String,
     model: Option<String>,
     python_path: Option<String>,
     initial_prompt: Option<String>,
     diarize: Option<bool>,
     hf_token: Option<String>,
+}
+
+#[tauri::command]
+async fn run_whisper(
+    app: tauri::AppHandle,
+    whisper_server: State<'_, WhisperServerHandle>,
+    options: WhisperOptions,
 ) -> Result<TranscriptResult, String> {
+    let WhisperOptions { audio_path, model, python_path, initial_prompt, diarize, hf_token } = options;
     let model = model.unwrap_or_else(|| "mlx-community/whisper-large-v3-mlx".to_string());
     let python_path = python_path.unwrap_or_else(|| "/usr/bin/python3".to_string());
     let prompt = initial_prompt.unwrap_or_default();

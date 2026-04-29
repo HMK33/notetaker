@@ -218,16 +218,15 @@ def run_server(model: str, default_hf_token: str = "") -> None:
             result = mlx_whisper.transcribe(audio_path, **kwargs)
 
             turns = None
-            if diarize:
-                if not hf_token:
-                    print(json.dumps({"error": "화자 분리에는 HuggingFace 토큰이 필요합니다."}), flush=True)
-                    continue
+            if diarize and hf_token:
+                # 토큰 있으면 시도. 실패해도 일반 전사 결과를 살리기 위해 에러 대신 fallback.
                 try:
                     turns = diarize_turns(audio_path, hf_token)
                 except Exception as e:
                     msg = _mask_token(str(e), hf_token)
-                    print(json.dumps({"error": f"화자 분리 실패: {msg}"}), flush=True)
-                    continue
+                    print(f"[diarize] 실패, 일반 모드로 fallback: {msg}", file=_original_stderr)
+                    turns = None
+            # diarize 요청됐지만 토큰 없으면 조용히 일반 모드로 진행 (JS 측에서 이미 차단해야 함)
 
             print(json.dumps(build_output(result, turns), ensure_ascii=False), flush=True)
 

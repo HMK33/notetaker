@@ -45,7 +45,10 @@ extern "C" fn trampoline(samples: *const f32, count: i32, user_data: *mut c_void
     }
     let ctx = unsafe { &*(user_data as *const CallbackCtx) };
     let slice = unsafe { std::slice::from_raw_parts(samples, count as usize) };
-    let _ = ctx.sender.send(slice.to_vec());
+    if let Err(e) = ctx.sender.send(slice.to_vec()) {
+        // receiver 드랍 = 정상 종료 경로 (stop 중). 디버그 메시지로만.
+        eprintln!("[sck] sample 전달 실패 (수신측 종료됨): {e}");
+    }
 }
 
 /// Active capture handle. Drop or call `stop()` to tear down.

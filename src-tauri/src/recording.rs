@@ -159,11 +159,19 @@ pub fn get_recordings_dir(recordings_path: &str) -> PathBuf {
     }
 }
 
+/// 녹음 세션 컨텍스트 — prepare_session에서 spawn_processor로 넘기는 자원 묶음.
+struct SessionContext {
+    output_path: PathBuf,
+    chunks_dir: PathBuf,
+    sender: mpsc::Sender<Vec<f32>>,
+    receiver: mpsc::Receiver<Vec<f32>>,
+}
+
 /// 녹음 세션 공통 초기화: 좀비 정리, 출력/청크 경로 준비, 상태 초기화, mpsc 채널 생성.
 fn prepare_session(
     state: &Arc<RecordingState>,
     recordings_path: &str,
-) -> Result<(PathBuf, PathBuf, mpsc::Sender<Vec<f32>>, mpsc::Receiver<Vec<f32>>)> {
+) -> Result<SessionContext> {
     if state.is_recording.load(Ordering::SeqCst) {
         state.is_recording.store(false, Ordering::SeqCst);
         *state.stream.lock().unwrap() = None;
@@ -200,7 +208,12 @@ fn prepare_session(
     let (tx, rx) = mpsc::channel::<Vec<f32>>();
     *state.audio_sender.lock().unwrap() = Some(tx.clone());
 
-    Ok((output_path, chunks_dir, tx, rx))
+    Ok(SessionContext {
+        output_path,
+        chunks_dir,
+        sender: tx,
+        receiver: rx,
+    })
 }
 
 /// 처리 스레드: PCM Vec<f32>를 받아서 다운믹스/리샘플/WAV 저장/청크 emit.
@@ -323,7 +336,8 @@ pub fn start_recording(
     device_name: Option<String>,
     recordings_path: String,
 ) -> Result<()> {
-    let (output_path, chunks_dir, tx, rx) = prepare_session(&state, &recordings_path)?;
+    let SessionContext { output_path, chunks_dir, sender: tx, receiver: rx } =
+        prepare_session(&state, &recordings_path)?;
 
     let host = cpal::default_host();
     let device = if let Some(ref name) = device_name {
@@ -360,9 +374,10 @@ pub fn start_recording(
         None,
     )?;
 
+    // is_recording을 먼저 true로 세트한 뒤 스트림 재생 → 첫 콜백 샘플 유실 방지.
+    state.is_recording.store(true, Ordering::SeqCst);
     stream.play()?;
     *state.stream.lock().unwrap() = Some(stream);
-    state.is_recording.store(true, Ordering::SeqCst);
 
     Ok(())
 }
@@ -384,7 +399,8 @@ pub fn start_recording_system_audio(
         ));
     }
 
-    let (output_path, chunks_dir, tx, rx) = prepare_session(&state, &recordings_path)?;
+    let SessionContext { output_path, chunks_dir, sender: tx, receiver: rx } =
+        prepare_session(&state, &recordings_path)?;
 
     let processor = spawn_processor(
         state.clone(), app.clone(), output_path, chunks_dir, rx,
