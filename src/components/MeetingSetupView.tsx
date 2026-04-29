@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from "react";
-import { Mic, X, Plus, ArrowLeft, ChevronDown } from "lucide-react";
+import { Mic, X, Plus, ArrowLeft, ChevronDown, Users2 } from "lucide-react";
 import { useTeamMembers } from "../hooks/useTeamMembers";
 import { useMeetingTypes } from "../hooks/useMeetingTypes";
 import type { MeetingSetup } from "../types";
@@ -7,9 +7,10 @@ import type { MeetingSetup } from "../types";
 interface Props {
   onCancel: () => void;
   onStart: (setup: MeetingSetup) => void;
+  hasHfToken: boolean;
 }
 
-export function MeetingSetupView({ onCancel, onStart }: Props) {
+export function MeetingSetupView({ onCancel, onStart, hasHfToken }: Props) {
   const { members } = useTeamMembers();
   const { types } = useMeetingTypes();
 
@@ -17,6 +18,7 @@ export function MeetingSetupView({ onCancel, onStart }: Props) {
   const [meetingTypeId, setMeetingTypeId] = useState<string | null>(null);
   const [attendees, setAttendees] = useState<string[]>([]);
   const [externalInput, setExternalInput] = useState("");
+  const [diarize, setDiarize] = useState(false);
   const externalRef = useRef<HTMLInputElement>(null);
 
   // 첫 로드 시 첫 번째 유형(내부미팅)을 디폴트로
@@ -52,6 +54,7 @@ export function MeetingSetupView({ onCancel, onStart }: Props) {
       title: title.trim() || null,
       meeting_type: selectedTypeName,
       attendees,
+      diarize,
     });
   };
 
@@ -206,6 +209,39 @@ export function MeetingSetupView({ onCancel, onStart }: Props) {
                 </p>
               )}
             </div>
+          </Field>
+
+          {/* 화자 분리 토글 */}
+          <Field label="고급" hint="회의 크기·환경에 따라 선택">
+            <label
+              className={`flex items-start gap-3 p-3 bg-zinc-900 border border-zinc-800 rounded-xl transition-colors ${
+                hasHfToken
+                  ? "cursor-pointer hover:border-zinc-700"
+                  : "opacity-60 cursor-not-allowed"
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={hasHfToken && diarize}
+                disabled={!hasHfToken}
+                onChange={(e) => setDiarize(e.target.checked)}
+                className="mt-1 accent-red-500"
+              />
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <Users2 size={14} className="text-zinc-400" />
+                  <span className="text-sm text-white">화자 분리 (Speaker turn detection)</span>
+                </div>
+                <p className="text-xs text-zinc-500 mt-1 leading-relaxed">
+                  화자가 바뀌는 시점을 자동 감지해 단락으로 구분합니다. 전사 시간 약 1.3~1.8배 증가.
+                </p>
+                {!hasHfToken && (
+                  <p className="text-xs text-amber-500 mt-1.5">
+                    ⚠ 사용하려면 설정 → Whisper 설정 → HuggingFace 토큰 입력 필요
+                  </p>
+                )}
+              </div>
+            </label>
           </Field>
         </div>
 

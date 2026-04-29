@@ -62,10 +62,18 @@ impl WhisperServer {
         })
     }
 
-    pub fn transcribe(&mut self, audio_path: &str, initial_prompt: &str) -> Result<TranscriptResult> {
+    pub fn transcribe(
+        &mut self,
+        audio_path: &str,
+        initial_prompt: &str,
+        diarize: bool,
+        hf_token: &str,
+    ) -> Result<TranscriptResult> {
         let req = serde_json::json!({
             "audio_path": audio_path,
             "initial_prompt": initial_prompt,
+            "diarize": diarize,
+            "hf_token": hf_token,
         });
 
         writeln!(self.stdin, "{req}").map_err(|e| anyhow::anyhow!("stdin 쓰기 실패: {e}"))?;
@@ -97,7 +105,10 @@ impl WhisperServer {
 
 impl Drop for WhisperServer {
     fn drop(&mut self) {
-        let _ = self.child.kill();
+        if let Err(e) = self.child.kill() {
+            // ESRCH(이미 종료)는 정상이라 디버그로만 남김 — 좀비 프로세스 진단 용도
+            eprintln!("Whisper 서버 종료 시 kill 실패 (이미 종료됐을 수 있음): {e}");
+        }
         let _ = self.child.wait();
     }
 }

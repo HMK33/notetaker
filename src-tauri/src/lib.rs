@@ -78,18 +78,31 @@ fn stop_recording(app: tauri::AppHandle, state: State<RecordingStateHandle>) -> 
     recording::stop_recording(state.inner().clone(), app).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-async fn run_whisper(
-    app: tauri::AppHandle,
-    whisper_server: State<'_, WhisperServerHandle>,
+/// JS에서 invoke('run_whisper', { ... })로 넘겨주는 옵션 묶음.
+/// 인자 너무 많아서 구조체로 묶음. 모두 optional이라 누락 시 기본값.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WhisperOptions {
     audio_path: String,
     model: Option<String>,
     python_path: Option<String>,
     initial_prompt: Option<String>,
+    diarize: Option<bool>,
+    hf_token: Option<String>,
+}
+
+#[tauri::command]
+async fn run_whisper(
+    app: tauri::AppHandle,
+    whisper_server: State<'_, WhisperServerHandle>,
+    options: WhisperOptions,
 ) -> Result<TranscriptResult, String> {
+    let WhisperOptions { audio_path, model, python_path, initial_prompt, diarize, hf_token } = options;
     let model = model.unwrap_or_else(|| "mlx-community/whisper-large-v3-mlx".to_string());
     let python_path = python_path.unwrap_or_else(|| "/usr/bin/python3".to_string());
     let prompt = initial_prompt.unwrap_or_default();
+    let diarize = diarize.unwrap_or(false);
+    let hf_token = hf_token.unwrap_or_default();
     let script_path = get_script_path(&app);
     let server_handle = whisper_server.inner().clone();
 
@@ -113,7 +126,7 @@ async fn run_whisper(
         let result = guard
             .as_mut()
             .unwrap()
-            .transcribe(&audio_path, &prompt)
+            .transcribe(&audio_path, &prompt, diarize, &hf_token)
             .map_err(|e| e.to_string());
 
         // 전사 실패 시 서버 리셋 (다음 호출 시 재시작)
@@ -190,6 +203,37 @@ async fn check_claude_env(claude_path: Option<String>) -> ClaudeEnvStatus {
     }
 }
 
+/// 흔한 설치 위치들에서 mlx-whisper가 작동하는 python 인터프리터를 탐색.
+/// 프로젝트 .venv를 우선 시도 (개발 환경), 그 다음 시스템/홈브루.
+#[tauri::command]
+async fn auto_detect_python_path(app: tauri::AppHandle) -> Option<String> {
+    use tauri::Manager;
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    // 앱 리소스 디렉터리(빌드 시 .venv 동봉) → 개발 cwd → 홈브루/시스템
+    let mut candidates: Vec<String> = Vec::new();
+    if let Ok(resource) = app.path().resource_dir() {
+        candidates.push(
+            resource.join(".venv").join("bin").join("python").to_string_lossy().into_owned(),
+        );
+    }
+    candidates.extend([
+        format!("{home}/Coding/notetaker/.venv/bin/python"),
+        "/opt/homebrew/bin/python3".to_string(),
+        "/usr/local/bin/python3".to_string(),
+        "/usr/bin/python3".to_string(),
+        "python3".to_string(),
+    ]);
+
+    for path in candidates {
+        let status = whisper_runner::check_python_env(&app, &path).await;
+        if status.installed {
+            return Some(path);
+        }
+    }
+    None
+}
+
 /// 흔한 설치 위치들에서 claude 바이너리를 찾아 첫 번째로 실행 가능한 경로 반환.
 #[tauri::command]
 async fn auto_detect_claude_path() -> Option<String> {
@@ -238,13 +282,22 @@ fn delete_audio_file(audio_path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn run_claude_summary(prompt: String, claude_path: Option<String>) -> Result<String, String> {
+async fn run_claude_summary(
+    prompt: String,
+    claude_path: Option<String>,
+    claude_model: Option<String>,
+) -> Result<String, String> {
     use tokio::io::AsyncWriteExt;
 
     let claude_bin = claude_path.unwrap_or_else(|| "claude".to_string());
 
-    let mut child = tokio::process::Command::new(&claude_bin)
-        .args(["--print", "--output-format", "json"])
+    let mut cmd = tokio::process::Command::new(&claude_bin);
+    cmd.args(["--print", "--output-format", "json"]);
+    if let Some(model) = claude_model.as_deref().filter(|m| !m.is_empty()) {
+        cmd.args(["--model", model]);
+    }
+
+    let mut child = cmd
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -264,7 +317,7 @@ async fn run_claude_summary(prompt: String, claude_path: Option<String>) -> Resu
         child.wait_with_output(),
     )
     .await
-    .map_err(|_| "요약 시간 초과 (5분). Claude CLI가 응답하지 않습니다.".to_string())?
+    .map_err(|_| "요약 시간 초과 (5분). Claude CLI가 응답하지 않습니다. CLI 경로·로그인 상태·인터넷 연결을 확인하세요.".to_string())?
     .map_err(|e| format!("Claude 응답 대기 실패: {e}"))?;
 
     if !output.status.success() {
@@ -326,6 +379,7 @@ pub fn run() {
             check_python_env,
             check_claude_env,
             auto_detect_claude_path,
+            auto_detect_python_path,
             delete_audio_file,
             open_recordings_folder,
             run_claude_summary,

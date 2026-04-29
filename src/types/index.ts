@@ -31,6 +31,7 @@ export interface MeetingSetup {
   title: string | null;
   meeting_type: string | null;
   attendees: string[];
+  diarize: boolean;
 }
 
 export interface MeetingSummary {
@@ -96,12 +97,16 @@ export type WhisperModel =
   | "mlx-community/whisper-large-v3-turbo"
   | "mlx-community/whisper-large-v3-mlx";
 
+export type ClaudeModel = "" | "sonnet" | "opus" | "haiku";
+
 export interface AppSettings {
   claude_path: string;
+  claude_model: ClaudeModel;
   notion_api_key: string;
   notion_database_id: string;
   whisper_model: WhisperModel;
   recordings_path: string;
   audio_source: AudioSource;
   python_path: string;
+  hf_token: string;
 }

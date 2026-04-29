@@ -6,6 +6,7 @@ import { useMeetingStore } from "../store/meetingStore";
 import { summarizeMeeting } from "../services/llm";
 import { saveMeeting, updateMeetingTranscript, updateMeetingSummary } from "../services/database";
 import type { RecordingResult, TranscriptResult, Meeting, AppSettings, MeetingSetup } from "../types";
+import { effectiveHfToken } from "../utils/env";
 
 const ASSEMBLY_TIMEOUT_MS = 60 * 60 * 1000; // 전사 최대 대기 60분
 
@@ -43,6 +44,20 @@ function cleanHallucinations(text: string): string {
 const OVERLAP_SEC = 2;
 const WORDS_PER_SEC_KO = 2.5; // 한국어 대략치 — fallback용
 
+// 단락 구분(\n\n+)을 "단어"로 인코딩해서 dedup이 보존하도록 함.
+// 화자 분리 결과가 사라지지 않게 함.
+const PARAGRAPH_TOKEN = "§§PARA§§";
+
+function encodeParagraphs(text: string): string {
+  return text.replace(/\n{2,}/g, ` ${PARAGRAPH_TOKEN} `);
+}
+
+function decodeParagraphs(text: string): string {
+  return text
+    .replace(new RegExp(`(?:\\s*${PARAGRAPH_TOKEN}\\s*)+`, "g"), "\n\n")
+    .trim();
+}
+
 function dedupeOverlap(prev: string, curr: string): string {
   if (!prev || !curr) return curr;
   const prevWords = prev.split(/\s+/).filter(Boolean);
@@ -63,15 +78,17 @@ function dedupeOverlap(prev: string, curr: string): string {
 
 function mergeOverlappingChunks(chunks: string[]): string {
   if (chunks.length === 0) return "";
-  let result = chunks[0].trim();
+  const encoded = chunks.map((c) => encodeParagraphs(c.trim()));
+  let result = encoded[0];
 
-  for (let i = 1; i < chunks.length; i++) {
-    const next = dedupeOverlap(result, chunks[i].trim());
+  for (let i = 1; i < encoded.length; i++) {
+    const next = dedupeOverlap(result, encoded[i]);
     if (!next) continue;
     result += (result ? " " : "") + next;
   }
 
-  return result.replace(/\s+/g, " ").trim();
+  // 모든 공백을 단일 공백으로 정규화한 뒤 단락 토큰만 \n\n으로 복원.
+  return decodeParagraphs(result.replace(/[\t ]+/g, " ").trim());
 }
 
 export function useRecording(settings?: AppSettings) {
@@ -153,7 +170,9 @@ export function useRecording(settings?: AppSettings) {
     // VAD: 무음 청크는 Whisper 호출 생략. 빈 텍스트로 처리.
     if (isSilent) {
       chunkTranscripts.current.set(index, "");
-      invoke("delete_audio_file", { audioPath: path }).catch(() => {});
+      invoke("delete_audio_file", { audioPath: path }).catch((e) =>
+        console.warn(`[chunk] 임시 파일 삭제 실패 (${path}):`, e)
+      );
       tryAssemble();
       isProcessingChunk.current = false;
       processNextChunk();
@@ -164,17 +183,27 @@ export function useRecording(settings?: AppSettings) {
     const memoHint = memoRef.current ? `회의 주제: ${memoRef.current}. ` : "";
     const initialPrompt = (memoHint + prevChunkTailRef.current).trim();
 
+    // 방어선: 화자 분리 요청됐어도 토큰 없으면 일반 모드로 fallback.
+    // (UI에서 비활성화 처리하지만 settings 변경 타이밍 등 race도 방지)
+    // 사용자 설정 토큰 → 빌드 시 baked-in env 토큰 순으로 사용.
+    const hfToken = effectiveHfToken(settingsRef.current?.hf_token);
+    const wantsDiarize = (setupRef.current?.diarize ?? false) && hfToken.length > 0;
+
     try {
       const result = await invoke<TranscriptResult>("run_whisper", {
-        audioPath: path,
-        pythonPath: settingsRef.current?.python_path,
-        model: settingsRef.current?.whisper_model,
-        initialPrompt: initialPrompt || undefined,
+        options: {
+          audioPath: path,
+          pythonPath: settingsRef.current?.python_path,
+          model: settingsRef.current?.whisper_model,
+          initialPrompt: initialPrompt || undefined,
+          diarize: wantsDiarize,
+          hfToken: hfToken || undefined,
+        },
       });
       const cleaned = cleanHallucinations(result.text);
       chunkTranscripts.current.set(index, cleaned);
-      // 다음 청크 품질을 위해 현재 청크 끝 ~150자 보존
-      prevChunkTailRef.current = cleaned.slice(-150);
+      // 다음 청크 품질을 위해 현재 청크 끝 ~150자 보존 (단락 마커 제외하고)
+      prevChunkTailRef.current = cleaned.replace(/\n+/g, " ").slice(-150);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`[Whisper] 청크 ${index} 전사 실패:`, msg);
@@ -182,7 +211,9 @@ export function useRecording(settings?: AppSettings) {
       // 사용자에게 부분 전사 실패 알림
       setError(`일부 구간(${index + 1}번) 전사 실패 — 해당 구간은 비어있습니다.`);
     } finally {
-      invoke("delete_audio_file", { audioPath: path }).catch(() => {});
+      invoke("delete_audio_file", { audioPath: path }).catch((e) =>
+        console.warn(`[chunk] 임시 파일 삭제 실패 (${path}):`, e)
+      );
       tryAssemble();
       isProcessingChunk.current = false;
       // 큐에 남은 청크가 있으면 다음 처리
@@ -349,6 +380,7 @@ export function useRecording(settings?: AppSettings) {
                 attendees: setup?.attendees ?? null,
               },
               settingsRef.current?.claude_path,
+              settingsRef.current?.claude_model,
             );
             updateCurrentMeeting({ summary });
           } catch (e) {
@@ -388,9 +420,11 @@ export function useRecording(settings?: AppSettings) {
       try {
         setProcessingStep("transcribing");
         const result = await invoke<TranscriptResult>("run_whisper", {
-          audioPath,
-          pythonPath: settings?.python_path,
-          model: settings?.whisper_model,
+          options: {
+            audioPath,
+            pythonPath: settings?.python_path,
+            model: settings?.whisper_model,
+          },
         });
         await updateMeetingTranscript(meetingId, result.text);
         updateCurrentMeeting({ transcript: result.text });
@@ -420,7 +454,8 @@ export function useRecording(settings?: AppSettings) {
             meeting_type: context?.meeting_type ?? null,
             attendees: context?.attendees ?? null,
           },
-          settingsRef.current?.claude_path
+          settingsRef.current?.claude_path,
+          settingsRef.current?.claude_model
         );
         await updateMeetingSummary(meetingId, summary);
         updateCurrentMeeting({ summary });

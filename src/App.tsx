@@ -13,6 +13,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { getMeetings, updateMeetingSummary, updateNotionPageId } from "./services/database";
 import { summarizeMeeting } from "./services/llm";
 import { saveToNotion } from "./services/notion";
+import { effectiveHfToken } from "./utils/env";
 import type { Meeting, MeetingSetup } from "./types";
 
 type View = "home" | "setup" | "list" | "result";
@@ -71,8 +72,12 @@ export default function App() {
     setPendingCount(count);
   }, []);
 
+  // 미처리 카운트는 미팅이 끝났거나 idle로 돌아왔을 때만 갱신.
+  // (중간 상태 transitioning에서 매번 DB 쿼리하지 않도록 — 미팅당 1회 호출)
   useEffect(() => {
-    refreshPendingCount();
+    if (recordingState === "done" || recordingState === "idle") {
+      refreshPendingCount();
+    }
   }, [refreshPendingCount, recordingState]);
 
   // 일괄 요약 처리
@@ -89,7 +94,8 @@ export default function App() {
             meeting.transcript!,
             meeting.memo,
             { meeting_type: meeting.meeting_type, attendees: meeting.attendees },
-            settings.claude_path
+            settings.claude_path,
+            settings.claude_model
           );
           await updateMeetingSummary(meeting.id, summary);
 
@@ -136,6 +142,7 @@ export default function App() {
   const handleBack = () => {
     if (recordingState === "done" || recordingState === "error") {
       reset();
+      setPendingSetup(null); // 다음 미팅 진입 시 이전 setup 잔재 제거
     }
     setView("home");
   };
@@ -291,6 +298,7 @@ export default function App() {
           <MeetingSetupView
             onCancel={() => setView("home")}
             onStart={handleSetupStart}
+            hasHfToken={!!effectiveHfToken(settings.hf_token)}
           />
         )}
 

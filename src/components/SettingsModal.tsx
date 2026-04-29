@@ -12,6 +12,12 @@ interface ClaudeEnvStatus {
   error: string | null;
 }
 
+interface PythonEnvStatus {
+  installed: boolean;
+  python_path: string;
+  error?: string;
+}
+
 interface SettingsModalProps {
   settings: AppSettings;
   onSave: (settings: AppSettings) => void;
@@ -106,6 +112,24 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
               value={form.claude_path}
               onChange={update("claude_path")}
             />
+            <div className="mt-3">
+              <label className="block text-xs text-zinc-400 mb-1.5">Claude 모델</label>
+              <div className="relative">
+                <select
+                  value={form.claude_model}
+                  onChange={(e) => update("claude_model")(e.target.value)}
+                  className="appearance-none w-full bg-zinc-800 text-white rounded-xl px-4 py-3 pr-10 text-sm outline-none focus:ring-1 focus:ring-zinc-600 cursor-pointer"
+                >
+                  <option value="">기본 (Claude Code 설정 따름)</option>
+                  <option value="sonnet">Sonnet (균형, 권장)</option>
+                  <option value="opus">Opus (최고 품질, 느림)</option>
+                  <option value="haiku">Haiku (빠름, 저비용)</option>
+                </select>
+              </div>
+              <p className="text-zinc-600 text-xs mt-1">
+                회의록 요약·AI 대화에 사용할 모델. "기본"이면 Claude Code의 `/model` 설정값 사용.
+              </p>
+            </div>
           </Section>
 
           {/* Notion 설정 */}
@@ -146,16 +170,22 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
             </div>
 
             <div className="mt-3">
-              <label className="block text-xs text-zinc-400 mb-1.5">Python 실행 경로</label>
-              <input
-                type="text"
+              <PythonPathField
                 value={form.python_path}
-                onChange={(e) => update("python_path")(e.target.value)}
-                placeholder="/usr/bin/python3 또는 /opt/homebrew/bin/python3"
-                className="w-full bg-zinc-800 text-white rounded-xl px-4 py-3 text-sm placeholder:text-zinc-600 outline-none focus:ring-1 focus:ring-zinc-600"
+                onChange={update("python_path")}
+              />
+            </div>
+
+            <div className="mt-3">
+              <ApiKeyInput
+                label="HuggingFace 토큰 (화자 분리용)"
+                value={form.hf_token}
+                onChange={update("hf_token")}
+                placeholder="hf_..."
               />
               <p className="text-zinc-600 text-xs mt-1">
-                mlx-whisper가 설치된 Python 경로를 입력하세요
+                화자 분리(diarization) 사용 시 필요. huggingface.co/settings/tokens에서 발급 후
+                pyannote/speaker-diarization-3.1 모델 약관 동의 필요.
               </p>
             </div>
           </Section>
@@ -349,6 +379,110 @@ function ClaudeCliField({
 
       <p className="text-zinc-600 text-xs mt-2">
         앱 첫 실행 시 일반적인 설치 경로를 자동으로 찾아 채웁니다. 못 찾으면 직접 입력 후 "연결 확인".
+      </p>
+    </div>
+  );
+}
+
+function PythonPathField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [status, setStatus] = useState<PythonEnvStatus | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [autoTried, setAutoTried] = useState(false);
+
+  useEffect(() => {
+    if (autoTried) return;
+    setAutoTried(true);
+    (async () => {
+      const trimmed = value.trim();
+      if (trimmed === "") {
+        const detected = await invoke<string | null>("auto_detect_python_path");
+        if (detected) {
+          onChange(detected);
+          await runCheck(detected);
+          return;
+        }
+      }
+      if (trimmed) {
+        await runCheck(trimmed);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const runCheck = async (path: string) => {
+    if (!path) {
+      setStatus(null);
+      return;
+    }
+    setChecking(true);
+    try {
+      const result = await invoke<PythonEnvStatus>("check_python_env", {
+        pythonPath: path || null,
+      });
+      setStatus(result);
+    } catch (e) {
+      setStatus({
+        installed: false,
+        python_path: path,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div>
+      <label className="block text-xs text-zinc-400 mb-1.5">Python 실행 경로</label>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => {
+            onChange(e.target.value);
+            setStatus(null);
+          }}
+          placeholder="/opt/homebrew/bin/python3 또는 venv 경로"
+          className="flex-1 bg-zinc-800 text-white rounded-xl px-4 py-3 text-sm placeholder:text-zinc-600 outline-none focus:ring-1 focus:ring-zinc-600"
+        />
+        <button
+          type="button"
+          onClick={() => runCheck(value)}
+          disabled={checking}
+          className="px-4 rounded-xl bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 text-zinc-300 hover:text-white text-sm transition-colors whitespace-nowrap"
+        >
+          {checking ? <Loader2 size={14} className="animate-spin" /> : "연결 확인"}
+        </button>
+      </div>
+
+      {status && !checking && (
+        <div
+          className={`mt-2 flex items-start gap-2 text-xs ${
+            status.installed ? "text-emerald-400" : "text-red-400"
+          }`}
+        >
+          {status.installed ? (
+            <>
+              <CheckCircle2 size={14} className="shrink-0 mt-0.5" />
+              <span>mlx-whisper 사용 가능</span>
+            </>
+          ) : (
+            <>
+              <XCircle size={14} className="shrink-0 mt-0.5" />
+              <span>{status.error ?? "Python 또는 mlx-whisper를 찾을 수 없습니다."}</span>
+            </>
+          )}
+        </div>
+      )}
+
+      <p className="text-zinc-600 text-xs mt-2">
+        mlx-whisper가 설치된 Python. 첫 실행 시 자동 감지 (.venv → 시스템 순). 못 찾으면 직접 입력.
       </p>
     </div>
   );
