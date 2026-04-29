@@ -168,10 +168,28 @@ function buildBlocks(meeting: Meeting): NotionBlock[] {
   return blocks;
 }
 
-async function findTitlePropertyName(
-  apiKey: string,
-  databaseId: string
-): Promise<string> {
+type SelectableType = "select" | "status" | "multi_select";
+
+interface NotionProperty {
+  type: string;
+  select?: { options: Array<{ name: string }> };
+  status?: { options: Array<{ name: string }> };
+  multi_select?: { options: Array<{ name: string }> };
+}
+
+interface DbSchema {
+  titleProperty: string;
+  dateProperties: string[];
+  numberProperties: string[];
+  richTextProperties: string[];
+  selectables: Array<{
+    name: string;
+    type: SelectableType;
+    options: string[];
+  }>;
+}
+
+async function fetchDbSchema(apiKey: string, databaseId: string): Promise<DbSchema> {
   const response = await fetchWithRetry(
     `https://api.notion.com/v1/databases/${databaseId}`,
     {
@@ -186,11 +204,65 @@ async function findTitlePropertyName(
   if (!response.ok) {
     throw new Error(`Notion DB 조회 실패 (HTTP ${response.status})`);
   }
-  const db = await response.json() as { properties: Record<string, { type: string }> };
+  const db = await response.json() as { properties: Record<string, NotionProperty> };
+
+  let titleProperty: string | null = null;
+  const selectables: DbSchema["selectables"] = [];
+  const dateProperties: string[] = [];
+  const numberProperties: string[] = [];
+  const richTextProperties: string[] = [];
   for (const [name, prop] of Object.entries(db.properties)) {
-    if (prop.type === "title") return name;
+    if (prop.type === "title") {
+      titleProperty = name;
+    } else if (prop.type === "date") {
+      dateProperties.push(name);
+    } else if (prop.type === "number") {
+      numberProperties.push(name);
+    } else if (prop.type === "rich_text") {
+      richTextProperties.push(name);
+    } else if (prop.type === "select" && prop.select) {
+      selectables.push({ name, type: "select", options: prop.select.options.map((o) => o.name) });
+    } else if (prop.type === "status" && prop.status) {
+      selectables.push({ name, type: "status", options: prop.status.options.map((o) => o.name) });
+    } else if (prop.type === "multi_select" && prop.multi_select) {
+      selectables.push({ name, type: "multi_select", options: prop.multi_select.options.map((o) => o.name) });
+    }
   }
-  throw new Error("DB에 title 속성을 찾을 수 없습니다.");
+  if (!titleProperty) {
+    throw new Error("DB에 title 속성을 찾을 수 없습니다.");
+  }
+  return { titleProperty, dateProperties, numberProperties, richTextProperties, selectables };
+}
+
+// 공백·대소문자 차이 흡수 ("내부미팅" ↔ "내부 미팅" 등 매칭)
+function normalizeName(s: string): string {
+  return s.replace(/\s+/g, "").toLowerCase();
+}
+
+/**
+ * 미팅 유형 문자열과 매칭되는 select/status/multi_select 프로퍼티를 찾는다.
+ * DB의 모든 후보 프로퍼티를 순회하며 옵션 이름을 비교 (공백 무시).
+ * 첫 번째 매치 반환. 없으면 null.
+ */
+function findTypeMatch(
+  schema: DbSchema,
+  meetingType: string
+): { propertyName: string; type: SelectableType; optionName: string } | null {
+  const target = normalizeName(meetingType);
+  for (const prop of schema.selectables) {
+    for (const option of prop.options) {
+      if (normalizeName(option) === target) {
+        return { propertyName: prop.name, type: prop.type, optionName: option };
+      }
+    }
+  }
+  return null;
+}
+
+function selectablePropertyValue(type: SelectableType, optionName: string) {
+  if (type === "select") return { select: { name: optionName } };
+  if (type === "status") return { status: { name: optionName } };
+  return { multi_select: [{ name: optionName }] };
 }
 
 // Notion API는 한 번에 children 100개 제한 — 초과분은 별도 append 호출.
@@ -230,7 +302,46 @@ export async function saveToNotion(
 ): Promise<string> {
   const title =
     meeting.title ?? format(new Date(meeting.recorded_at), "yyyy-MM-dd 미팅");
-  const titleProp = await findTitlePropertyName(apiKey, databaseId);
+  const schema = await fetchDbSchema(apiKey, databaseId);
+
+  const properties: Record<string, unknown> = {
+    [schema.titleProperty]: {
+      title: [{ type: "text", text: { content: title } }],
+    },
+  };
+
+  // Date 속성: 첫 번째 date-type 프로퍼티에 회의 날짜 자동 입력
+  if (schema.dateProperties.length > 0) {
+    properties[schema.dateProperties[0]] = {
+      date: { start: meeting.recorded_at },
+    };
+  }
+
+  // Number 속성 중 이름이 길이/duration 류면 분 단위 시간 입력
+  for (const name of schema.numberProperties) {
+    const lower = name.toLowerCase();
+    if (/길이|시간|duration|length|minutes/.test(lower)) {
+      properties[name] = { number: parseFloat((meeting.duration_sec / 60).toFixed(1)) };
+      break;
+    }
+  }
+
+  // 미팅 유형 자동 매칭:
+  //  1순위: DB의 select/status/multi_select 프로퍼티 옵션 이름과 일치 (공백/대소문자 무시)
+  //  2순위: 1순위에서 못 찾으면, "구분/유형/type/category" 같은 이름의 rich_text 프로퍼티에 텍스트로 입력
+  if (meeting.meeting_type) {
+    const match = findTypeMatch(schema, meeting.meeting_type);
+    if (match) {
+      properties[match.propertyName] = selectablePropertyValue(match.type, match.optionName);
+    } else {
+      const fallback = schema.richTextProperties.find((n) =>
+        /구분|유형|type|category/i.test(n)
+      );
+      if (fallback) {
+        properties[fallback] = { rich_text: [{ type: "text", text: { content: meeting.meeting_type } }] };
+      }
+    }
+  }
 
   const allBlocks = buildBlocks(meeting);
   const firstBatch = allBlocks.slice(0, 100);
@@ -238,11 +349,7 @@ export async function saveToNotion(
 
   const body = {
     parent: { database_id: databaseId },
-    properties: {
-      [titleProp]: {
-        title: [{ type: "text", text: { content: title } }],
-      },
-    },
+    properties,
     children: firstBatch,
   };
 
