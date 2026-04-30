@@ -277,18 +277,43 @@ export function RecordingBar({
 
   if (recordingState === "idle") {
     return (
-      <div className="flex flex-col items-center justify-center flex-1 gap-8">
-        <div className="text-center">
-          <h1 className="text-3xl font-bold text-white mb-2">ttiro</h1>
-          <p className="text-zinc-400 text-sm">미팅을 녹음하고 AI로 요약하세요</p>
+      <div className="relative flex flex-col items-center justify-center flex-1 gap-10 overflow-hidden">
+        {/* 우측 문양 — 옛 기사 문장(紋章)처럼 양피지에 찍힌 느낌 */}
+        <img
+          src="/symbol-nobg.png"
+          alt=""
+          aria-hidden="true"
+          className="symbol-crest"
+        />
+
+        {/* 워드마크 + 서브 타이틀 */}
+        <div className="relative text-center z-10">
+          <h1 className="wordmark text-5xl text-white mb-3 tracking-wide">ttiro</h1>
+          <div className="editorial-divider w-48 mx-auto mb-3">
+            <span className="ornament">· · ·</span>
+          </div>
+          <p className="text-zinc-400 text-sm">
+            녹음하고 · 옮겨 적고 · 정리하다
+          </p>
         </div>
+
+        {/* 녹음 버튼 — 다층 그림자로 도장 찍는 느낌 */}
         <button
           onClick={onNewMeeting}
-          className="w-28 h-28 rounded-full bg-red-600 hover:bg-red-500 active:scale-95 transition-all duration-150 flex items-center justify-center shadow-2xl shadow-red-900/50"
+          className="relative w-28 h-28 rounded-full bg-red-600 hover:bg-red-500 active:scale-95 transition-all duration-200 flex items-center justify-center shadow-2xl shadow-red-900/50 z-10 lift-on-hover group"
+          style={{
+            boxShadow:
+              "0 1px 0 rgba(255,255,255,0.15) inset, 0 -2px 8px rgba(0,0,0,0.2) inset, 0 8px 24px rgba(0,0,0,0.35), 0 4px 12px var(--color-red-900, #4a1410)",
+          }}
         >
-          <Mic size={44} className="text-white" />
+          <Mic size={44} className="text-white drop-shadow-lg" />
+          {/* 동심원 펄스 */}
+          <span className="absolute inset-0 rounded-full ring-1 ring-white/20 group-hover:ring-white/40 transition-all" />
         </button>
-        <p className="text-zinc-500 text-xs">클릭하여 새 미팅 시작</p>
+
+        <p className="relative text-zinc-500 text-xs tracking-widest uppercase z-10" style={{ letterSpacing: "0.2em" }}>
+          press to begin
+        </p>
       </div>
     );
   }

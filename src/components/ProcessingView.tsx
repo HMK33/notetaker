@@ -27,7 +27,6 @@ export function ProcessingView({ whisperModel }: ProcessingViewProps) {
     { key: "summarizing", label: "AI 요약 생성 중...", emoji: "✨" },
   ];
 
-
   return (
     <div className="flex flex-col items-center justify-center flex-1 gap-8 p-8">
       <div className="text-center">

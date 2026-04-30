@@ -22,12 +22,11 @@ function formatDuration(sec: number): string {
 }
 
 interface MeetingCardMenuProps {
-  meeting: Meeting;
   onDeleteAudio: () => void;
   onDeleteAll: () => void;
 }
 
-function MeetingCardMenu({ meeting: _meeting, onDeleteAudio, onDeleteAll }: MeetingCardMenuProps) {
+function MeetingCardMenu({ onDeleteAudio, onDeleteAll }: MeetingCardMenuProps) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -46,7 +45,10 @@ function MeetingCardMenu({ meeting: _meeting, onDeleteAudio, onDeleteAll }: Meet
         <>
           <div
             className="fixed inset-0 z-10"
-            onClick={() => setOpen(false)}
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+            }}
           />
           <div className="absolute right-0 top-8 z-20 bg-zinc-800 border border-zinc-700 rounded-xl shadow-2xl py-1 min-w-40">
             <button
@@ -124,7 +126,6 @@ export function MeetingList({ onSelect, compact = false }: MeetingListProps) {
           </div>
 
           <MeetingCardMenu
-            meeting={meeting}
             onDeleteAudio={async () => {
               await deleteAudioFile(meeting.audio_path);
             }}

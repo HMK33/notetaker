@@ -279,7 +279,7 @@ export default function App() {
               <ArrowLeft size={18} />
             </button>
           )}
-          <h1 className="text-sm font-semibold">
+          <h1 className={`text-sm font-semibold ${view === "home" ? "wordmark" : ""}`}>
             {view === "list"
               ? "미팅 목록"
               : view === "result"
@@ -361,19 +361,19 @@ export default function App() {
 
             {/* 최근 미팅록 (idle 상태에서만 표시) */}
             {recordingState === "idle" && (
-              <div className="px-4 pb-4">
-                <div className="flex items-center justify-between mb-2">
-                  <h2 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
-                    최근 미팅
-                  </h2>
+              <div className="relative z-10 px-6 pb-5 pt-3">
+                <div className="editorial-divider mb-4">
+                  <span className="ornament text-[10px] tracking-[0.3em] uppercase">최근의 기록</span>
+                </div>
+                <MeetingList onSelect={handleSelectMeeting} compact />
+                <div className="text-center mt-3">
                   <button
                     onClick={() => setView("list")}
                     className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
                   >
-                    전체 보기
+                    전체 보기 →
                   </button>
                 </div>
-                <MeetingList onSelect={handleSelectMeeting} compact />
               </div>
             )}
           </>

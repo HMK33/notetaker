@@ -304,12 +304,19 @@ function MeetingMetadata({ meeting }: { meeting: Meeting }) {
   );
 }
 
+const ROMAN_NUMERALS: Record<string, string> = {
+  "1": "I", "2": "II", "3": "III", "4": "IV", "5": "V", "6": "VI",
+  "7": "VII", "8": "VIII", "9": "IX",
+};
+
 function Section({ label, title, children }: { label: string; title: string; children: React.ReactNode }) {
+  const roman = ROMAN_NUMERALS[label] ?? label;
   return (
     <div>
-      <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3 flex items-center gap-2">
-        <span className="bg-zinc-800 text-zinc-400 rounded px-1.5 py-0.5">{label}</span>
-        {title}
+      <h3 className="mb-4 flex items-baseline gap-3">
+        <span className="serif-numeral text-zinc-500 text-sm w-6 text-right shrink-0">{roman}.</span>
+        <span className="wordmark text-base text-white tracking-tight">{title}</span>
+        <span className="flex-1 h-px bg-zinc-800 ml-2" />
       </h3>
       {children}
     </div>
