@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { load } from "@tauri-apps/plugin-store";
-import type { AppSettings, AudioSource } from "../types";
+import type { AppSettings, AudioSource, Theme } from "../types";
 
 const DEFAULT_SETTINGS: AppSettings = {
   claude_path: "claude",
@@ -12,7 +12,12 @@ const DEFAULT_SETTINGS: AppSettings = {
   audio_source: "microphone" as AudioSource,
   python_path: "",
   hf_token: "",
+  theme: "classic-dark" as Theme,
 };
+
+function applyTheme(theme: Theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+}
 
 async function getStore() {
   return load("settings.json", {
@@ -41,7 +46,9 @@ export function useSettings() {
         }
       }
 
-      setSettings({ ...DEFAULT_SETTINGS, ...loaded });
+      const merged = { ...DEFAULT_SETTINGS, ...loaded };
+      applyTheme(merged.theme);
+      setSettings(merged);
     } catch (e) {
       console.error("설정 로드 실패:", e);
     } finally {
@@ -56,6 +63,7 @@ export function useSettings() {
         await store.set(key, value);
       }
       await store.save();
+      applyTheme(newSettings.theme);
       setSettings(newSettings);
     } catch (e) {
       console.error("설정 저장 실패:", e);

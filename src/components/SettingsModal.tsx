@@ -1,7 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { X, Eye, EyeOff, FolderOpen, Plus, Trash2, Lock, CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, WhisperModel } from "../types";
+import type { AppSettings, Theme, WhisperModel } from "../types";
 import { useTeamMembers } from "../hooks/useTeamMembers";
 import { useMeetingTypes } from "../hooks/useMeetingTypes";
 
@@ -70,15 +70,33 @@ function ApiKeyInput({
 export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps) {
   const [form, setForm] = useState<AppSettings>({ ...settings });
   const [saving, setSaving] = useState(false);
+  const savedRef = useRef(false);
+  const initialThemeRef = useRef(settings.theme);
 
   const update = (key: keyof AppSettings) => (value: string) => {
     setForm((prev) => ({ ...prev, [key]: value }));
   };
 
+  // 테마는 미리보기를 위해 즉시 html에 반영하고, 저장 없이 닫으면 원래대로 되돌림
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", form.theme);
+  }, [form.theme]);
+
+  useEffect(() => {
+    return () => {
+      // 저장됐으면 부모가 이미 새 테마를 적용했으니 건드리지 않음.
+      // 저장 없이 닫혔을 때만 모달 열릴 때의 원래 테마로 복원.
+      if (!savedRef.current) {
+        document.documentElement.setAttribute("data-theme", initialThemeRef.current);
+      }
+    };
+  }, []);
+
   const handleSave = async () => {
     setSaving(true);
     try {
       await onSave(form);
+      savedRef.current = true;
       onClose();
     } finally {
       setSaving(false);
@@ -106,6 +124,17 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
         </div>
 
         <div className="p-5 space-y-5">
+          {/* 테마 */}
+          <Section title="테마">
+            <ThemePicker
+              value={form.theme}
+              onChange={(t) => setForm((prev) => ({ ...prev, theme: t }))}
+            />
+            <p className="text-zinc-600 text-xs mt-2">
+              저장 전에도 즉시 미리보기가 적용됩니다. 저장하지 않고 닫으면 원래 테마로 돌아갑니다.
+            </p>
+          </Section>
+
           {/* AI 설정 */}
           <Section title="AI 설정">
             <ClaudeCliField
@@ -457,6 +486,58 @@ function Section({ title, children }: { title: string; children: React.ReactNode
         {title}
       </h3>
       {children}
+    </div>
+  );
+}
+
+const THEME_OPTIONS: { value: Theme; label: string; desc: string; swatches: string[] }[] = [
+  {
+    value: "classic-dark",
+    label: "Classic Dark",
+    desc: "기본 — 차가운 무채색 다크",
+    swatches: ["#09090b", "#27272a", "#dc2626"],
+  },
+  {
+    value: "warm-light",
+    label: "Warm Light",
+    desc: "양피지·바랜 잉크 — Editorial",
+    swatches: ["#ebe2c9", "#b8aa8a", "#82382a"],
+  },
+];
+
+function ThemePicker({ value, onChange }: { value: Theme; onChange: (t: Theme) => void }) {
+  return (
+    <div className="grid grid-cols-1 gap-2">
+      {THEME_OPTIONS.map((opt) => {
+        const selected = value === opt.value;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => onChange(opt.value)}
+            className={`flex items-center gap-3 p-3 rounded-xl border transition-all text-left ${
+              selected
+                ? "bg-zinc-800 border-zinc-500"
+                : "bg-zinc-900 border-zinc-800 hover:border-zinc-700"
+            }`}
+          >
+            <div className="flex gap-1 shrink-0">
+              {opt.swatches.map((c, i) => (
+                <span
+                  key={i}
+                  className="w-5 h-5 rounded-full border border-black/20"
+                  style={{ backgroundColor: c }}
+                />
+              ))}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm text-white">{opt.label}</p>
+              <p className="text-xs text-zinc-500 mt-0.5">{opt.desc}</p>
+            </div>
+            {selected && <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />}
+          </button>
+        );
+      })}
     </div>
   );
 }

@@ -100,6 +100,8 @@ export type WhisperModel =
 
 export type ClaudeModel = "" | "sonnet" | "opus" | "haiku";
 
+export type Theme = "classic-dark" | "warm-light";
+
 export interface AppSettings {
   claude_path: string;
   claude_model: ClaudeModel;
@@ -110,4 +112,5 @@ export interface AppSettings {
   audio_source: AudioSource;
   python_path: string;
   hf_token: string;
+  theme: Theme;
 }
