@@ -279,7 +279,7 @@ export function RecordingBar({
     return (
       <div className="flex flex-col items-center justify-center flex-1 gap-8">
         <div className="text-center">
-          <h1 className="text-3xl font-bold text-white mb-2">Notetaker</h1>
+          <h1 className="text-3xl font-bold text-white mb-2">ttiro</h1>
           <p className="text-zinc-400 text-sm">미팅을 녹음하고 AI로 요약하세요</p>
         </div>
         <button

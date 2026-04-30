@@ -395,7 +395,7 @@ pub fn start_recording_system_audio(
         // 시스템 프롬프트 트리거 — 첫 호출은 false 반환할 수 있음.
         sck_capture::request_permission();
         return Err(anyhow::anyhow!(
-            "화면 녹화 권한이 필요합니다. 시스템 설정에서 Notetaker를 허용한 뒤 다시 시도해주세요."
+            "화면 녹화 권한이 필요합니다. 시스템 설정 → 개인정보 보호 및 보안 → 화면 녹화에서 ttiro를 허용한 뒤 앱을 재시작해주세요."
         ));
     }
 

@@ -32,6 +32,7 @@ export interface MeetingSetup {
   meeting_type: string | null;
   attendees: string[];
   diarize: boolean;
+  audio_source: AudioSource;
 }
 
 export interface MeetingSummary {

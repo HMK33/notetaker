@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { getCurrentWebviewWindow, WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Settings, List, ArrowLeft, AlertCircle, X, WifiOff, Sparkles } from "lucide-react";
 import { useMeetingStore } from "./store/meetingStore";
@@ -42,6 +42,50 @@ function useOnlineStatus() {
   return isOnline;
 }
 
+/**
+ * 캔버스 기반 심볼 렌더러: PNG의 흰 배경 픽셀을 투명 처리.
+ * - 밝기 > 250: 완전 투명
+ * - 밝기 240~250: 선형 보간 (안티에일리어싱 자연스럽게)
+ * - 그 외: 그대로
+ */
+function TransparentSymbol() {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const img = new Image();
+    img.src = "/symbol.png";
+    img.onload = () => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(img, 0, 0);
+      const imageData = ctx.getImageData(0, 0, img.width, img.height);
+      const data = imageData.data;
+      for (let i = 0; i < data.length; i += 4) {
+        const brightness = (data[i] + data[i + 1] + data[i + 2]) / 3;
+        if (brightness > 250) {
+          data[i + 3] = 0;
+        } else if (brightness > 240) {
+          // 250 → alpha 0, 240 → alpha 255 선형 보간 (반투명 가장자리)
+          data[i + 3] = Math.round(((250 - brightness) / 10) * 255);
+        }
+      }
+      ctx.putImageData(imageData, 0, 0);
+    };
+  }, []);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="max-w-full max-h-full"
+      style={{ imageRendering: "auto" }}
+    />
+  );
+}
+
 function SplashWindow() {
   useEffect(() => {
     // 윈도우 전체가 투명하게 보이도록 body 배경도 투명 처리.
@@ -62,13 +106,11 @@ function SplashWindow() {
   }, []);
 
   return (
-    <div className="fixed inset-0 flex items-center justify-center" style={{ background: "transparent" }}>
-      <img
-        src="/symbol.png"
-        alt="ttiro"
-        className="w-full h-full object-contain"
-        draggable={false}
-      />
+    <div
+      className="fixed inset-0 flex items-center justify-center"
+      style={{ background: "transparent" }}
+    >
+      <TransparentSymbol />
     </div>
   );
 }
@@ -242,7 +284,7 @@ export default function App() {
               ? "미팅 목록"
               : view === "result"
               ? currentMeeting?.title ?? "미팅 결과"
-              : "Notetaker"}
+              : "ttiro"}
           </h1>
         </div>
 

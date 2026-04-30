@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, useMemo } from "react";
-import { Mic, X, Plus, ArrowLeft, ChevronDown, Users2 } from "lucide-react";
+import { Mic, X, Plus, ArrowLeft, ChevronDown, Users2, Monitor, Headphones } from "lucide-react";
 import { useTeamMembers } from "../hooks/useTeamMembers";
 import { useMeetingTypes } from "../hooks/useMeetingTypes";
-import type { MeetingSetup } from "../types";
+import type { MeetingSetup, AudioSource } from "../types";
 
 interface Props {
   onCancel: () => void;
@@ -19,6 +19,7 @@ export function MeetingSetupView({ onCancel, onStart, hasHfToken }: Props) {
   const [attendees, setAttendees] = useState<string[]>([]);
   const [externalInput, setExternalInput] = useState("");
   const [diarize, setDiarize] = useState(false);
+  const [audioSource, setAudioSource] = useState<AudioSource>("microphone");
   const externalRef = useRef<HTMLInputElement>(null);
 
   // 첫 로드 시 첫 번째 유형(내부미팅)을 디폴트로
@@ -55,6 +56,7 @@ export function MeetingSetupView({ onCancel, onStart, hasHfToken }: Props) {
       meeting_type: selectedTypeName,
       attendees,
       diarize,
+      audio_source: audioSource,
     });
   };
 
@@ -89,6 +91,46 @@ export function MeetingSetupView({ onCancel, onStart, hasHfToken }: Props) {
               className="w-full bg-zinc-900 border border-zinc-800 text-white rounded-xl px-4 py-3.5 text-sm placeholder:text-zinc-600 outline-none focus:border-zinc-600 transition-colors"
               autoFocus
             />
+          </Field>
+
+          {/* 회의 형태 */}
+          <Field label="회의 형태" hint="오디오 캡처 방식 결정">
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setAudioSource("microphone")}
+                className={`flex items-start gap-3 p-3.5 rounded-xl border transition-all text-left ${
+                  audioSource === "microphone"
+                    ? "bg-zinc-800 border-zinc-600"
+                    : "bg-zinc-900 border-zinc-800 hover:border-zinc-700"
+                }`}
+              >
+                <Headphones size={16} className="mt-0.5 shrink-0 text-zinc-400" />
+                <div>
+                  <p className="text-sm text-white">오프라인</p>
+                  <p className="text-xs text-zinc-500 mt-0.5 leading-relaxed">
+                    대면 미팅 — 마이크만 녹음
+                  </p>
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setAudioSource("system_and_mic")}
+                className={`flex items-start gap-3 p-3.5 rounded-xl border transition-all text-left ${
+                  audioSource === "system_and_mic"
+                    ? "bg-zinc-800 border-zinc-600"
+                    : "bg-zinc-900 border-zinc-800 hover:border-zinc-700"
+                }`}
+              >
+                <Monitor size={16} className="mt-0.5 shrink-0 text-zinc-400" />
+                <div>
+                  <p className="text-sm text-white">온라인</p>
+                  <p className="text-xs text-zinc-500 mt-0.5 leading-relaxed">
+                    Zoom · Meet — 시스템 오디오 + 마이크
+                  </p>
+                </div>
+              </button>
+            </div>
           </Field>
 
           {/* 미팅 유형 */}

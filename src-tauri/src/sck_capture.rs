@@ -72,7 +72,7 @@ impl SckCapture {
             unsafe { drop(Box::from_raw(ctx)); }
             return Err(match rc {
                 -1 => anyhow!(
-                    "시스템 오디오 캡처 시작 실패. 시스템 설정 > 개인정보 보호 > 화면 녹화에서 Notetaker 권한을 켜주세요."
+                    "시스템 오디오 캡처 시작 실패. 시스템 설정 > 개인정보 보호 > 화면 녹화에서 ttiro 권한을 켜주세요."
                 ),
                 -2 => anyhow!("마이크 캡처 시작 실패. 마이크 권한을 확인해주세요."),
                 _ => anyhow!("오디오 캡처 시작 실패 (코드 {rc})"),

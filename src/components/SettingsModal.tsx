@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { X, Eye, EyeOff, FolderOpen, Plus, Trash2, Lock, CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, WhisperModel, AudioSource } from "../types";
+import type { AppSettings, WhisperModel } from "../types";
 import { useTeamMembers } from "../hooks/useTeamMembers";
 import { useMeetingTypes } from "../hooks/useMeetingTypes";
 
@@ -187,44 +187,6 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
                 화자 분리(diarization) 사용 시 필요. huggingface.co/settings/tokens에서 발급 후
                 pyannote/speaker-diarization-3.1 모델 약관 동의 필요.
               </p>
-            </div>
-          </Section>
-
-          {/* 오디오 설정 */}
-          <Section title="오디오 소스">
-            <div className="space-y-2">
-              {(
-                [
-                  {
-                    value: "microphone" as AudioSource,
-                    label: "마이크만",
-                    desc: "오프라인 미팅에 적합",
-                  },
-                  {
-                    value: "system_and_mic" as AudioSource,
-                    label: "시스템 오디오 + 마이크",
-                    desc: "Zoom / Google Meet 등 화상회의 (첫 사용 시 화면 녹화 권한 필요)",
-                  },
-                ] as const
-              ).map((opt) => (
-                <label
-                  key={opt.value}
-                  className="flex items-start gap-3 p-3 bg-zinc-800 rounded-xl cursor-pointer"
-                >
-                  <input
-                    type="radio"
-                    name="audio_source"
-                    value={opt.value}
-                    checked={form.audio_source === opt.value}
-                    onChange={() => update("audio_source")(opt.value)}
-                    className="mt-0.5"
-                  />
-                  <div>
-                    <p className="text-sm text-white">{opt.label}</p>
-                    <p className="text-xs text-zinc-500">{opt.desc}</p>
-                  </div>
-                </label>
-              ))}
             </div>
           </Section>
 

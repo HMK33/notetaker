@@ -304,7 +304,10 @@ export function useRecording(settings?: AppSettings) {
 
         // 시스템 오디오 + 마이크 모드는 macOS ScreenCaptureKit 사용 (BlackHole 불필요).
         // 첫 호출 시 권한이 없으면 시스템 프롬프트가 트리거되며 에러 메시지로 안내.
-        const source = settingsRef.current?.audio_source ?? "microphone";
+        // 미팅별 setup이 우선, 없으면 settings의 default값.
+        const source = setupRef.current?.audio_source
+          ?? settingsRef.current?.audio_source
+          ?? "microphone";
 
         await invoke("start_recording", {
           deviceName: deviceName ?? null,
