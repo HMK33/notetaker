@@ -184,6 +184,7 @@ def run_server(model: str, default_hf_token: str = "") -> None:
     try:
         import mlx_whisper
     except ImportError:
+        print(json.dumps({"error": "mlx_whisper이 설치되지 않았습니다. pip install mlx-whisper"}), flush=True)
         sys.exit(1)
 
     # 서버 모드는 전 구간 stderr 억제 (mlx_whisper progress bar deadlock 방지).

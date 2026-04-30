@@ -99,7 +99,14 @@ async fn run_whisper(
 ) -> Result<TranscriptResult, String> {
     let WhisperOptions { audio_path, model, python_path, initial_prompt, diarize, hf_token } = options;
     let model = model.unwrap_or_else(|| "mlx-community/whisper-large-v3-mlx".to_string());
-    let python_path = python_path.unwrap_or_else(|| "/usr/bin/python3".to_string());
+    let python_path = match python_path.as_deref() {
+        Some(p) if !p.is_empty() => p.to_string(),
+        _ => auto_detect_python_path(app.clone())
+            .await
+            .ok_or_else(|| {
+                "mlx-whisper가 설치된 Python을 찾을 수 없습니다. 설정에서 Python 경로를 지정해주세요.".to_string()
+            })?,
+    };
     let prompt = initial_prompt.unwrap_or_default();
     let diarize = diarize.unwrap_or(false);
     let hf_token = hf_token.unwrap_or_default();
