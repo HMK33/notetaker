@@ -335,6 +335,22 @@ async fn run_claude_summary(
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// 터미널을 열어 `claude login`을 실행하여 OAuth 플로우를 시작.
+/// macOS 전용. Terminal.app에서 사용자가 브라우저로 인증을 완료할 수 있도록 함.
+#[tauri::command]
+fn claude_login(claude_path: Option<String>) -> Result<(), String> {
+    let bin = claude_path.unwrap_or_else(|| "claude".to_string());
+    let escaped = bin.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(
+        "tell application \"Terminal\"\nactivate\ndo script \"{escaped} login\"\nend tell"
+    );
+    std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .status()
+        .map_err(|e| format!("Terminal 실행 실패: {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 fn open_recordings_folder(recordings_path: Option<String>) -> Result<(), String> {
     let dir = recording::get_recordings_dir(&recordings_path.unwrap_or_default());
@@ -385,6 +401,7 @@ pub fn run() {
             run_whisper,
             check_python_env,
             check_claude_env,
+            claude_login,
             auto_detect_claude_path,
             auto_detect_python_path,
             delete_audio_file,

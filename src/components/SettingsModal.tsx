@@ -344,6 +344,19 @@ function ClaudeCliField({
         >
           {checking ? <Loader2 size={14} className="animate-spin" /> : "연결 확인"}
         </button>
+        <button
+          type="button"
+          onClick={async () => {
+            try {
+              await invoke("claude_login", { claudePath: value || null });
+            } catch (e) {
+              console.error("Claude 로그인 실행 실패:", e);
+            }
+          }}
+          className="px-4 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white text-sm transition-colors whitespace-nowrap"
+        >
+          Claude 로그인
+        </button>
       </div>
 
       {status && !checking && (
