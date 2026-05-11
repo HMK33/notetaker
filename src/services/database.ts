@@ -133,11 +133,22 @@ type MeetingRow = Omit<Meeting, "summary" | "attendees"> & {
   attendees: string | null;
 };
 
+function safeParse<T>(raw: string | null, label: string, meetingId?: string): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch (e) {
+    // DB의 일부 row만 손상돼 있어도 목록 전체가 못 뜨는 사고 방지 → null로 fallback.
+    console.warn(`[database] ${label} 파싱 실패 (meeting=${meetingId ?? "?"}):`, e);
+    return null;
+  }
+}
+
 function rowToMeeting(row: MeetingRow): Meeting {
   return {
     ...row,
-    summary: row.summary ? (JSON.parse(row.summary) as MeetingSummary) : null,
-    attendees: row.attendees ? (JSON.parse(row.attendees) as string[]) : null,
+    summary: safeParse<MeetingSummary>(row.summary, "summary", row.id),
+    attendees: safeParse<string[]>(row.attendees, "attendees", row.id),
   };
 }
 

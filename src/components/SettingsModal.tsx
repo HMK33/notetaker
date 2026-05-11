@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
-import { X, Eye, EyeOff, FolderOpen, Plus, Trash2, Lock, CheckCircle2, XCircle, Loader2 } from "lucide-react";
+import { X, Eye, EyeOff, FolderOpen, Plus, Trash2, Lock, CheckCircle2, XCircle, Loader2, ExternalLink } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AppSettings, Theme, WhisperModel } from "../types";
 import { useTeamMembers } from "../hooks/useTeamMembers";
 import { useMeetingTypes } from "../hooks/useMeetingTypes";
@@ -213,9 +214,25 @@ export function SettingsModal({ settings, onSave, onClose }: SettingsModalProps)
                 placeholder="hf_..."
               />
               <p className="text-zinc-600 text-xs mt-1">
-                화자 분리(diarization) 사용 시 필요. huggingface.co/settings/tokens에서 발급 후
-                pyannote/speaker-diarization-3.1 모델 약관 동의 필요.
+                화자 분리(diarization) 사용 시 필요. 미입력 시 화자 분리 옵션이 비활성화됩니다.
               </p>
+              <div className="flex flex-wrap gap-2 mt-2">
+                <button
+                  type="button"
+                  onClick={() => openUrl("https://huggingface.co/settings/tokens").catch(() => {})}
+                  className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 underline underline-offset-2 cursor-pointer"
+                >
+                  토큰 발급 <ExternalLink size={11} />
+                </button>
+                <span className="text-zinc-700 text-xs">·</span>
+                <button
+                  type="button"
+                  onClick={() => openUrl("https://huggingface.co/pyannote/speaker-diarization-3.1").catch(() => {})}
+                  className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 underline underline-offset-2 cursor-pointer"
+                >
+                  pyannote 모델 약관 동의 <ExternalLink size={11} />
+                </button>
+              </div>
             </div>
           </Section>
 

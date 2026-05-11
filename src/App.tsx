@@ -131,7 +131,7 @@ export default function App() {
   } = useMeetingStore();
   const { settings, loading: settingsLoading, saveSettings } = useSettings();
   const { startRecording, stopRecording, pauseRecording, resumeRecording, retrySummary } = useRecording(settings);
-  const { loadMeetings } = useMeetings();
+  const { loadMeetings } = useMeetings(settings);
   const isOnline = useOnlineStatus();
 
   const [view, setView] = useState<View>("home");
@@ -365,7 +365,7 @@ export default function App() {
                 <div className="editorial-divider mb-4">
                   <span className="ornament text-[10px] tracking-[0.3em] uppercase">최근의 기록</span>
                 </div>
-                <MeetingList onSelect={handleSelectMeeting} compact />
+                <MeetingList onSelect={handleSelectMeeting} compact settings={settings} />
                 <div className="text-center mt-3">
                   <button
                     onClick={() => setView("list")}
@@ -391,7 +391,7 @@ export default function App() {
         {/* 목록 */}
         {view === "list" && (
           <div className="flex-1 overflow-y-auto p-4">
-            <MeetingList onSelect={handleSelectMeeting} />
+            <MeetingList onSelect={handleSelectMeeting} settings={settings} />
           </div>
         )}
 

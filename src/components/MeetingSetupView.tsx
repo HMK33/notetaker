@@ -1,5 +1,7 @@
-import { useState, useRef, useEffect, useMemo } from "react";
-import { Mic, X, Plus, ArrowLeft, ChevronDown, Users2, Monitor, Headphones } from "lucide-react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { Mic, X, Plus, ArrowLeft, ChevronDown, Users2, Monitor, Headphones, AlertTriangle } from "lucide-react";
 import { useTeamMembers } from "../hooks/useTeamMembers";
 import { useMeetingTypes } from "../hooks/useMeetingTypes";
 import type { MeetingSetup, AudioSource } from "../types";
@@ -20,7 +22,32 @@ export function MeetingSetupView({ onCancel, onStart, hasHfToken }: Props) {
   const [externalInput, setExternalInput] = useState("");
   const [diarize, setDiarize] = useState(false);
   const [audioSource, setAudioSource] = useState<AudioSource>("microphone");
+  const [screenPermission, setScreenPermission] = useState<boolean | null>(null);
   const externalRef = useRef<HTMLInputElement>(null);
+
+  // 시스템 오디오 모드 선택 시 화면 녹화 권한 상태를 미리 체크 → 시작 후 무음 녹음되는 사고 방지.
+  // microphone 모드는 cpal이 알아서 macOS 프롬프트 띄우므로 별도 preflight 불필요.
+  const refreshScreenPermission = useCallback(async () => {
+    try {
+      const ok = await invoke<boolean>("check_screen_recording_permission");
+      setScreenPermission(ok);
+    } catch {
+      setScreenPermission(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (audioSource === "system_and_mic") {
+      refreshScreenPermission();
+    }
+  }, [audioSource, refreshScreenPermission]);
+
+  const openScreenRecordingSettings = () => {
+    openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+      .catch(() => {
+        openUrl("x-apple.systempreferences:com.apple.preference.security").catch(() => {});
+      });
+  };
 
   // 첫 로드 시 첫 번째 유형(내부미팅)을 디폴트로
   useEffect(() => {
@@ -131,6 +158,36 @@ export function MeetingSetupView({ onCancel, onStart, hasHfToken }: Props) {
                 </div>
               </button>
             </div>
+            {audioSource === "system_and_mic" && screenPermission === false && (
+              <div className="mt-3 p-3 bg-amber-950/40 border border-amber-900/60 rounded-xl">
+                <div className="flex items-start gap-2.5">
+                  <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-500" />
+                  <div className="flex-1 text-xs leading-relaxed">
+                    <p className="text-amber-200 font-medium">화면 녹화 권한이 필요합니다</p>
+                    <p className="text-amber-300/80 mt-1">
+                      시스템 오디오를 캡처하려면 macOS 시스템 설정에서 ttiro에 화면 녹화 권한을 부여해야 합니다.
+                      권한 부여 후 앱을 재시작해주세요.
+                    </p>
+                    <div className="flex gap-2 mt-2.5">
+                      <button
+                        type="button"
+                        onClick={openScreenRecordingSettings}
+                        className="px-3 py-1.5 text-xs rounded-lg bg-amber-900/50 hover:bg-amber-900 border border-amber-800 text-amber-100 transition-colors cursor-pointer"
+                      >
+                        시스템 설정 열기
+                      </button>
+                      <button
+                        type="button"
+                        onClick={refreshScreenPermission}
+                        className="px-3 py-1.5 text-xs rounded-lg hover:bg-amber-900/30 text-amber-300 transition-colors cursor-pointer"
+                      >
+                        다시 확인
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </Field>
 
           {/* 미팅 유형 */}
@@ -299,7 +356,8 @@ export function MeetingSetupView({ onCancel, onStart, hasHfToken }: Props) {
           <button
             type="button"
             onClick={handleStart}
-            className="flex items-center gap-2 px-6 py-3 rounded-xl bg-red-600 hover:bg-red-500 active:scale-[0.98] text-white text-sm font-medium shadow-lg shadow-red-900/30 transition-all cursor-pointer"
+            disabled={audioSource === "system_and_mic" && screenPermission === false}
+            className="flex items-center gap-2 px-6 py-3 rounded-xl bg-red-600 hover:bg-red-500 active:scale-[0.98] disabled:bg-zinc-700 disabled:cursor-not-allowed disabled:active:scale-100 text-white text-sm font-medium shadow-lg shadow-red-900/30 disabled:shadow-none transition-all cursor-pointer"
           >
             <Mic size={16} />
             녹음 시작

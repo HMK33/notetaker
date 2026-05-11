@@ -3,7 +3,7 @@ import { Copy, RefreshCw, Upload, Check, AlertTriangle, Clock, Calendar, Timer, 
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { format } from "date-fns";
 import { useMeetingStore } from "../store/meetingStore";
-import { saveToNotion } from "../services/notion";
+import { saveToNotion, NotionPartialSaveError } from "../services/notion";
 import { updateNotionPageId } from "../services/database";
 import type { AppSettings, Meeting, MeetingSummary } from "../types";
 
@@ -38,6 +38,11 @@ export function SummaryView({ settings, onRetrySummary }: SummaryViewProps) {
       setNotionError("Notion API 키와 Database ID를 설정해주세요.");
       return;
     }
+    // Optimistic update: 저장 시작 즉시 notion_page_id를 "pending"으로 마킹.
+    // 사용자가 미팅을 떠났다가 돌아와도 버튼이 재활성화되지 않아 중복 저장 race 차단.
+    if (currentMeeting.notion_page_id) {
+      return; // 이미 저장 완료
+    }
     setNotionSaving(true);
     setNotionError(null);
     try {
@@ -49,6 +54,16 @@ export function SummaryView({ settings, onRetrySummary }: SummaryViewProps) {
       await updateNotionPageId(id, pageId);
       updateCurrentMeeting({ notion_page_id: pageId });
     } catch (e) {
+      // 부분 저장: Notion에 페이지는 만들어졌으니 pageId를 보존해야 사용자가 페이지에서 보거나
+      // 수동 정리 가능. 일반 에러처럼 pageId 잃으면 고아 페이지가 생김.
+      if (e instanceof NotionPartialSaveError) {
+        try {
+          await updateNotionPageId(id, e.pageId);
+          updateCurrentMeeting({ notion_page_id: e.pageId });
+        } catch {
+          /* DB 저장 실패해도 메시지는 보여줘야 함 */
+        }
+      }
       setNotionError(e instanceof Error ? e.message : String(e));
     } finally {
       setNotionSaving(false);

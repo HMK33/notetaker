@@ -5,8 +5,9 @@ import {
   getMeetings,
   deleteMeeting as dbDeleteMeeting,
 } from "../services/database";
+import type { AppSettings } from "../types";
 
-export function useMeetings() {
+export function useMeetings(settings?: AppSettings) {
   const { meetings, setMeetings, removeMeeting } = useMeetingStore();
 
   useEffect(() => {
@@ -22,13 +23,19 @@ export function useMeetings() {
     }
   }, [setMeetings]);
 
-  const deleteAudioFile = useCallback(async (audioPath: string) => {
-    try {
-      await invoke("delete_audio_file", { audioPath });
-    } catch (e) {
-      console.error("오디오 파일 삭제 실패:", e);
-    }
-  }, []);
+  const deleteAudioFile = useCallback(
+    async (audioPath: string) => {
+      try {
+        await invoke("delete_audio_file", {
+          audioPath,
+          recordingsPath: settings?.recordings_path || null,
+        });
+      } catch (e) {
+        console.error("오디오 파일 삭제 실패:", e);
+      }
+    },
+    [settings?.recordings_path]
+  );
 
   const deleteMeeting = useCallback(
     async (id: string, audioPath: string, deleteAudio = true) => {

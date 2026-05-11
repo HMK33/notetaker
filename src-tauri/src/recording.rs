@@ -59,6 +59,11 @@ pub struct RecordingState {
 unsafe impl Send for RecordingState {}
 unsafe impl Sync for RecordingState {}
 
+// Mutex 락은 항상 `.lock().unwrap_or_else(|p| p.into_inner())` 패턴으로 잡는다.
+// 녹음 진행 중 한 스레드가 panic해서 mutex가 poison 되어도 앱 전체가 죽지 않고
+// 가능한 한 복구해서 진행하기 위함. 일관성 깨질 가능성보다 사용자가 진행 중이던
+// 녹음 데이터를 보호하는 게 우선.
+
 impl Default for RecordingState {
     fn default() -> Self {
         Self {
@@ -174,11 +179,11 @@ fn prepare_session(
 ) -> Result<SessionContext> {
     if state.is_recording.load(Ordering::SeqCst) {
         state.is_recording.store(false, Ordering::SeqCst);
-        *state.stream.lock().unwrap() = None;
+        *state.stream.lock().unwrap_or_else(|p| p.into_inner()) = None;
         #[cfg(target_os = "macos")]
-        { *state.sck.lock().unwrap() = None; }
-        *state.audio_sender.lock().unwrap() = None;
-        if let Some(handle) = state.processor_handle.lock().unwrap().take() {
+        { *state.sck.lock().unwrap_or_else(|p| p.into_inner()) = None; }
+        *state.audio_sender.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        if let Some(handle) = state.processor_handle.lock().unwrap_or_else(|p| p.into_inner()).take() {
             let _ = handle.join();
         }
     }
@@ -197,16 +202,16 @@ fn prepare_session(
         .join(&session_id);
     std::fs::create_dir_all(&chunks_dir)?;
 
-    *state.output_path.lock().unwrap() = Some(output_path.clone());
-    *state.start_time.lock().unwrap() = Some(Instant::now());
-    *state.chunks_dir.lock().unwrap() = Some(chunks_dir.clone());
+    *state.output_path.lock().unwrap_or_else(|p| p.into_inner()) = Some(output_path.clone());
+    *state.start_time.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
+    *state.chunks_dir.lock().unwrap_or_else(|p| p.into_inner()) = Some(chunks_dir.clone());
     state.chunk_index.store(0, Ordering::SeqCst);
     state.is_paused.store(false, Ordering::SeqCst);
     state.paused_duration_ms.store(0, Ordering::SeqCst);
-    *state.pause_start_time.lock().unwrap() = None;
+    *state.pause_start_time.lock().unwrap_or_else(|p| p.into_inner()) = None;
 
     let (tx, rx) = mpsc::channel::<Vec<f32>>();
-    *state.audio_sender.lock().unwrap() = Some(tx.clone());
+    *state.audio_sender.lock().unwrap_or_else(|p| p.into_inner()) = Some(tx.clone());
 
     Ok(SessionContext {
         output_path,
@@ -357,10 +362,11 @@ pub fn start_recording(
         state.clone(), app.clone(), output_path, chunks_dir, rx,
         native_sample_rate, channels,
     );
-    *state.processor_handle.lock().unwrap() = Some(processor);
+    *state.processor_handle.lock().unwrap_or_else(|p| p.into_inner()) = Some(processor);
 
     let is_recording_cb = state.is_recording.clone();
     let is_paused_cb = state.is_paused.clone();
+    let app_err = app.clone();
 
     let stream = device.build_input_stream(
         &config.config(),
@@ -370,14 +376,21 @@ pub fn start_recording(
             }
             let _ = tx.send(data.to_vec());
         },
-        |err| eprintln!("오디오 스트림 오류: {err}"),
+        move |err| {
+            // 오디오 스트림 에러(디바이스 분리, 권한 회수 등) → 프론트로 전파해서 사용자 안내.
+            // 콜백은 audio thread에서 호출되므로 가능한 가벼운 작업만 수행.
+            let _ = app_err.emit(
+                "recording-error",
+                serde_json::json!({"message": format!("오디오 스트림 오류: {err}")}),
+            );
+        },
         None,
     )?;
 
     // is_recording을 먼저 true로 세트한 뒤 스트림 재생 → 첫 콜백 샘플 유실 방지.
     state.is_recording.store(true, Ordering::SeqCst);
     stream.play()?;
-    *state.stream.lock().unwrap() = Some(stream);
+    *state.stream.lock().unwrap_or_else(|p| p.into_inner()) = Some(stream);
 
     Ok(())
 }
@@ -406,7 +419,7 @@ pub fn start_recording_system_audio(
         state.clone(), app.clone(), output_path, chunks_dir, rx,
         SCK_SAMPLE_RATE, 1,
     );
-    *state.processor_handle.lock().unwrap() = Some(processor);
+    *state.processor_handle.lock().unwrap_or_else(|p| p.into_inner()) = Some(processor);
 
     // SCK 콜백은 mpsc::Sender<Vec<f32>>로 직접 보낸다. pause 처리를 위해
     // 한 단계 bridge 스레드를 두고 is_paused일 때만 drop. 종료는 SckCapture
@@ -426,11 +439,11 @@ pub fn start_recording_system_audio(
         Ok(s) => s,
         Err(e) => {
             state.is_recording.store(false, Ordering::SeqCst);
-            *state.audio_sender.lock().unwrap() = None;
+            *state.audio_sender.lock().unwrap_or_else(|p| p.into_inner()) = None;
             return Err(e);
         }
     };
-    *state.sck.lock().unwrap() = Some(sck);
+    *state.sck.lock().unwrap_or_else(|p| p.into_inner()) = Some(sck);
 
     Ok(())
 }
@@ -454,13 +467,13 @@ pub fn stop_recording(state: Arc<RecordingState>, _app: AppHandle) -> Result<Rec
     state.is_recording.store(false, Ordering::SeqCst);
 
     // 2. 오디오 스트림 드랍 → 콜백 중지 → sender도 드랍
-    *state.stream.lock().unwrap() = None;
+    *state.stream.lock().unwrap_or_else(|p| p.into_inner()) = None;
     #[cfg(target_os = "macos")]
-    { *state.sck.lock().unwrap() = None; }
-    *state.audio_sender.lock().unwrap() = None;
+    { *state.sck.lock().unwrap_or_else(|p| p.into_inner()) = None; }
+    *state.audio_sender.lock().unwrap_or_else(|p| p.into_inner()) = None;
 
     // 3. 처리 스레드 완료 대기 (WAV finalize + final chunk 저장)
-    if let Some(handle) = state.processor_handle.lock().unwrap().take() {
+    if let Some(handle) = state.processor_handle.lock().unwrap_or_else(|p| p.into_inner()).take() {
         let _ = handle.join();
     }
 
@@ -468,20 +481,20 @@ pub fn stop_recording(state: Arc<RecordingState>, _app: AppHandle) -> Result<Rec
 
     // 일시정지 중에 stop한 경우, 현재 pause 시간도 누적
     if state.is_paused.load(Ordering::SeqCst) {
-        if let Some(pause_start) = state.pause_start_time.lock().unwrap().take() {
+        if let Some(pause_start) = state.pause_start_time.lock().unwrap_or_else(|p| p.into_inner()).take() {
             state.paused_duration_ms.fetch_add(pause_start.elapsed().as_millis() as u64, Ordering::SeqCst);
         }
     }
 
     let duration_sec = {
-        let start = state.start_time.lock().unwrap();
+        let start = state.start_time.lock().unwrap_or_else(|p| p.into_inner());
         let total_elapsed = start.map(|s| s.elapsed().as_secs()).unwrap_or(0);
         let paused_secs = state.paused_duration_ms.load(Ordering::SeqCst) / 1000;
         total_elapsed.saturating_sub(paused_secs)
     };
 
     let audio_path = {
-        let path = state.output_path.lock().unwrap();
+        let path = state.output_path.lock().unwrap_or_else(|p| p.into_inner());
         path.as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .ok_or_else(|| anyhow::anyhow!("녹음 파일 경로를 찾을 수 없습니다."))?
@@ -499,7 +512,7 @@ pub fn pause_recording(state: Arc<RecordingState>) -> Result<()> {
         return Err(anyhow::anyhow!("녹음 중이 아닙니다."));
     }
     state.is_paused.store(true, Ordering::SeqCst);
-    *state.pause_start_time.lock().unwrap() = Some(Instant::now());
+    *state.pause_start_time.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
     Ok(())
 }
 
@@ -508,7 +521,7 @@ pub fn resume_recording(state: Arc<RecordingState>) -> Result<()> {
         return Err(anyhow::anyhow!("녹음 중이 아닙니다."));
     }
     // 일시정지 시간 누적
-    if let Some(pause_start) = state.pause_start_time.lock().unwrap().take() {
+    if let Some(pause_start) = state.pause_start_time.lock().unwrap_or_else(|p| p.into_inner()).take() {
         state.paused_duration_ms.fetch_add(pause_start.elapsed().as_millis() as u64, Ordering::SeqCst);
     }
     state.is_paused.store(false, Ordering::SeqCst);

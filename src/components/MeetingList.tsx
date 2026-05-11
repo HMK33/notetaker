@@ -4,11 +4,12 @@ import { format } from "date-fns";
 import { ko } from "date-fns/locale";
 import { useMeetingStore } from "../store/meetingStore";
 import { useMeetings } from "../hooks/useMeetings";
-import type { Meeting } from "../types";
+import type { Meeting, AppSettings } from "../types";
 
 interface MeetingListProps {
   onSelect: (meeting: Meeting) => void;
   compact?: boolean;
+  settings?: AppSettings;
 }
 
 function formatDuration(sec: number): string {
@@ -80,9 +81,9 @@ function MeetingCardMenu({ onDeleteAudio, onDeleteAll }: MeetingCardMenuProps) {
   );
 }
 
-export function MeetingList({ onSelect, compact = false }: MeetingListProps) {
+export function MeetingList({ onSelect, compact = false, settings }: MeetingListProps) {
   const { meetings } = useMeetingStore();
-  const { deleteMeeting, deleteAudioFile } = useMeetings();
+  const { deleteMeeting, deleteAudioFile } = useMeetings(settings);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
   const displayedMeetings = compact ? meetings.slice(0, 5) : meetings;

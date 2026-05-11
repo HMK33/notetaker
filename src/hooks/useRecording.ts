@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { v4 as uuidv4 } from "uuid";
 import { useMeetingStore } from "../store/meetingStore";
-import { summarizeMeeting } from "../services/llm";
+import { summarizeMeeting, ensureClaudeAuth } from "../services/llm";
 import { saveMeeting, updateMeetingTranscript, updateMeetingSummary } from "../services/database";
 import type { RecordingResult, TranscriptResult, Meeting, AppSettings, MeetingSetup } from "../types";
 import { effectiveHfToken } from "../utils/env";
@@ -244,6 +244,13 @@ export function useRecording(settings?: AppSettings) {
         }
       );
 
+      const unlistenErr = await listen<{ message: string }>(
+        "recording-error",
+        (e) => {
+          setError(`녹음 오류: ${e.payload.message}`);
+        }
+      );
+
       // 청크 전사 처리 — 큐 + 동시실행 1개 제한 (RAM 폭주 방지)
       // processNextChunkRef를 통해 호출 → listener 재등록 없이 항상 최신 함수 참조
       const unlisten3 = await listen<{
@@ -265,10 +272,11 @@ export function useRecording(settings?: AppSettings) {
         unlisten1();
         unlisten2();
         unlisten3();
+        unlistenErr();
         return;
       }
 
-      unlistenFns.current = [unlisten1, unlisten2, unlisten3];
+      unlistenFns.current = [unlisten1, unlisten2, unlisten3, unlistenErr];
     };
 
     setupListeners();
@@ -371,10 +379,12 @@ export function useRecording(settings?: AppSettings) {
 
         updateCurrentMeeting({ transcript: fullTranscript });
 
-        // 3. Claude CLI 요약
+        // 3. Claude CLI 요약 (전사 결과는 이미 DB에 저장돼 있으니 요약 실패해도 데이터는 보존됨)
         if (fullTranscript) {
           setProcessingStep("summarizing");
           try {
+            // 사전 체크: 로그인 안 돼 있으면 5분 타임아웃 기다리지 않고 즉시 fail-fast
+            await ensureClaudeAuth(settingsRef.current?.claude_path);
             const summary = await summarizeMeeting(
               fullTranscript,
               memo,
@@ -450,6 +460,7 @@ export function useRecording(settings?: AppSettings) {
     ) => {
       try {
         setProcessingStep("summarizing");
+        await ensureClaudeAuth(settingsRef.current?.claude_path);
         const summary = await summarizeMeeting(
           transcript,
           memo,
@@ -462,6 +473,8 @@ export function useRecording(settings?: AppSettings) {
         );
         await updateMeetingSummary(meetingId, summary);
         updateCurrentMeeting({ summary });
+        // 재시도 성공 시 이전 실패 알럿이 남아있으면 자동 제거 (UX: 알럿 + 결과 동시 표시 방지)
+        setError(null);
         setProcessingStep(null);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);

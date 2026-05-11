@@ -46,9 +46,23 @@ interface ClaudeCliOutput {
   is_error: boolean;
 }
 
+interface ClaudeAuthStatus {
+  authenticated: boolean;
+  error: string | null;
+}
+
 export interface SummaryContext {
   meeting_type: string | null;
   attendees: string[] | null;
+}
+
+export async function ensureClaudeAuth(claudePath?: string): Promise<void> {
+  const status = await invoke<ClaudeAuthStatus>("check_claude_auth", {
+    claudePath: claudePath || undefined,
+  });
+  if (!status.authenticated) {
+    throw new Error(status.error ?? "Claude CLI 로그인이 필요합니다. 설정 → 'Claude 로그인' 버튼을 눌러주세요.");
+  }
 }
 
 export async function summarizeMeeting(
@@ -79,7 +93,13 @@ export async function summarizeMeeting(
     claudeModel: claudeModel || undefined,
   });
 
-  const cliOutput = JSON.parse(stdout) as ClaudeCliOutput;
+  let cliOutput: ClaudeCliOutput;
+  try {
+    cliOutput = JSON.parse(stdout) as ClaudeCliOutput;
+  } catch {
+    const preview = stdout.slice(0, 200).replace(/\s+/g, " ");
+    throw new Error(`Claude CLI 응답을 파싱하지 못했습니다 (JSON 형식 아님): ${preview}`);
+  }
   if (cliOutput.is_error) {
     throw new Error(`Claude 오류: ${cliOutput.result}`);
   }
@@ -90,7 +110,13 @@ export async function summarizeMeeting(
     return JSON.parse(resultText) as MeetingSummary;
   } catch {
     const match = resultText.match(/\{[\s\S]*\}/);
-    if (match) return JSON.parse(match[0]) as MeetingSummary;
+    if (match) {
+      try {
+        return JSON.parse(match[0]) as MeetingSummary;
+      } catch {
+        throw new Error("요약 결과를 파싱할 수 없습니다. Claude 응답 형식 오류");
+      }
+    }
     throw new Error("요약 결과를 파싱할 수 없습니다. Claude 응답 형식 오류");
   }
 }

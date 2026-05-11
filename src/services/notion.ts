@@ -21,24 +21,43 @@ type NotionBlock =
   | { object: "block"; type: "divider"; divider: Record<string, never> }
   | { object: "block"; type: "toggle"; toggle: { rich_text: NotionRichText[]; children: NotionBlock[] } };
 
+// Notion API는 일시적 5xx/네트워크 hiccup이 종종 있어서 적당히 재시도. 4xx는 사용자
+// 설정 오류(잘못된 API key 등)일 확률이 높아 retry 의미 없음 → 즉시 throw.
+const MAX_ATTEMPTS = 4;
+const BASE_BACKOFF_MS = 800;
+
 async function fetchWithRetry(
   url: string,
   options: Parameters<typeof fetch>[1],
   timeoutMs: number
 ) {
   let lastError: unknown = new Error("요청 실패");
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
-      return await Promise.race([
+      const response = await Promise.race([
         fetch(url, options),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(`요청 시간 초과 (${timeoutMs / 1000}초)`)), timeoutMs)
         ),
       ]);
+
+      // 4xx (rate limit 제외)는 retry 의미 없음 — 즉시 반환해서 호출자가 메시지 처리하게.
+      if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+        return response;
+      }
+      // 2xx 또는 retry 시도 후 마지막이면 그대로 반환.
+      if (response.ok || attempt === MAX_ATTEMPTS - 1) {
+        return response;
+      }
+      // 5xx / 429 → 재시도 대상. lastError 갱신 후 backoff.
+      lastError = new Error(`HTTP ${response.status}`);
     } catch (e) {
       lastError = e;
-      if (attempt === 0) await new Promise(r => setTimeout(r, 1500));
+      if (attempt === MAX_ATTEMPTS - 1) break;
     }
+    // Exponential backoff + jitter: 800ms, 1600ms, 3200ms (+ 0-300ms jitter)
+    const backoff = BASE_BACKOFF_MS * Math.pow(2, attempt) + Math.random() * 300;
+    await new Promise((r) => setTimeout(r, backoff));
   }
   throw lastError;
 }
@@ -94,13 +113,6 @@ function buildBlocks(meeting: Meeting): NotionBlock[] {
   }
   blocks.push(divider());
 
-  if (meeting.memo) {
-    blocks.push(heading2("📝 사용자 노트 (회의 중 작성)"));
-    for (const line of meeting.memo.split(/\n+/).filter(Boolean)) {
-      blocks.push(paragraph(line));
-    }
-  }
-
   if (summary) {
     blocks.push(heading2("📌 핵심 요약"));
     if (summary.executive_summary?.purpose) {
@@ -153,11 +165,24 @@ function buildBlocks(meeting: Meeting): NotionBlock[] {
     }
   }
 
-  if (meeting.transcript) {
+  const hasMemo = !!meeting.memo;
+  const hasTranscript = !!meeting.transcript;
+  if (hasMemo || hasTranscript) {
     blocks.push(divider());
-    // 전사 원문은 토글 안에 — 페이지가 길어지지 않도록.
+  }
+
+  if (hasMemo) {
+    const memoParas = meeting.memo!
+      .split(/\n+/)
+      .filter(Boolean)
+      .slice(0, 100)
+      .map(paragraph);
+    blocks.push(toggle("📝 사용자 노트 (회의 중 작성)", memoParas));
+  }
+
+  if (hasTranscript) {
     // Notion 토글 안 children은 100개 제한이라 paragraph로 분할.
-    const transcriptParas = meeting.transcript
+    const transcriptParas = meeting.transcript!
       .split(/\n+/)
       .filter(Boolean)
       .slice(0, 100)
@@ -265,33 +290,61 @@ function selectablePropertyValue(type: SelectableType, optionName: string) {
   return { multi_select: [{ name: optionName }] };
 }
 
+/**
+ * 페이지 생성은 성공했는데 본문 append 도중 실패한 경우 — Notion에는 부분 콘텐츠가
+ * 이미 저장돼 있음. 호출자는 pageId를 DB에 보존해서 사용자가 페이지에서 직접 확인 + 재시도
+ * 가능하도록 해야 함. 일반 Error로 던지면 호출자가 pageId를 잃어버려 부분 저장 상태가 고아가 됨.
+ */
+export class NotionPartialSaveError extends Error {
+  constructor(
+    public readonly pageId: string,
+    public readonly savedBatches: number,
+    public readonly totalBatches: number,
+    cause: string
+  ) {
+    super(
+      `Notion 페이지는 생성됐지만 본문 일부만 저장됐습니다 (${savedBatches}/${totalBatches} 배치). 페이지에서 직접 확인해주세요. (${cause})`
+    );
+    this.name = "NotionPartialSaveError";
+  }
+}
+
 // Notion API는 한 번에 children 100개 제한 — 초과분은 별도 append 호출.
 async function appendChildren(
   pageId: string,
   apiKey: string,
   blocks: NotionBlock[]
 ) {
+  const totalBatches = Math.ceil(blocks.length / 100);
+  let savedBatches = 0;
   for (let i = 0; i < blocks.length; i += 100) {
     const slice = blocks.slice(i, i + 100);
-    const response = await fetchWithRetry(
-      `https://api.notion.com/v1/blocks/${pageId}/children`,
-      {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Notion-Version": "2022-06-28",
-          "Content-Type": "application/json",
+    let response;
+    try {
+      response = await fetchWithRetry(
+        `https://api.notion.com/v1/blocks/${pageId}/children`,
+        {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Notion-Version": "2022-06-28",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ children: slice }),
         },
-        body: JSON.stringify({ children: slice }),
-      },
-      15000
-    );
+        15000
+      );
+    } catch (e) {
+      // 네트워크/타임아웃 등 retry 소진 케이스 — 부분 저장 정보 보존하여 호출자가 pageId 잃지 않게.
+      const cause = e instanceof Error ? e.message : String(e);
+      throw new NotionPartialSaveError(pageId, savedBatches, totalBatches, cause);
+    }
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      throw new Error(
-        `Notion 본문 저장 실패: ${(err as { message?: string }).message ?? `HTTP ${response.status}`}`
-      );
+      const cause = (err as { message?: string }).message ?? `HTTP ${response.status}`;
+      throw new NotionPartialSaveError(pageId, savedBatches, totalBatches, cause);
     }
+    savedBatches++;
   }
 }
 
